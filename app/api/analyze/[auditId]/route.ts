@@ -18,8 +18,8 @@ import { audits, findings, pages } from "@/lib/db/schema";
  * with the relevant persona(s) and an effort bucket — per the spec's
  * rollup-logic requirement (template-level aggregation, not per-page rows).
  */
-async function handler(req: NextRequest, { params }: { params: { auditId: string } }) {
-  const auditId = params.auditId;
+async function handler(req: NextRequest, { params }: { params: Promise<{ auditId: string }> }) {
+  const { auditId } = await params;
   const audit = await db.query.audits.findFirst({ where: eq(audits.id, auditId) });
   if (!audit) return NextResponse.json({ error: "audit not found" }, { status: 404 });
 
@@ -83,7 +83,7 @@ async function runBusinessAnalysis(auditId: string, allPages: (typeof pages.$inf
 
 // See app/api/crawl/page/route.ts for why this wraps at request time
 // rather than module scope.
-export async function POST(req: NextRequest, ctx: { params: { auditId: string } }) {
+export async function POST(req: NextRequest, ctx: { params: Promise<{ auditId: string }> }) {
   const verified = verifySignatureAppRouter((r: NextRequest) => handler(r, ctx));
   return verified(req);
 }
