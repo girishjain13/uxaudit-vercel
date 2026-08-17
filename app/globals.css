@@ -1,0 +1,212 @@
+:root {
+  --ink-bg: #10181c;
+  --ink-bg-raised: #161f24;
+  --paper: #eceee9;
+  --paper-dim: #8fa0a3;
+  --grid-line: rgba(236, 238, 233, 0.055);
+  --border: #26333a;
+  --border-bright: #3a4a52;
+  --signal-amber: #f2b705;
+  --signal-teal: #3fd6c0;
+  --signal-coral: #e8604c;
+
+  --font-display: var(--font-space-grotesk), "Space Grotesk", system-ui, sans-serif;
+  --font-body: var(--font-plex-sans), "IBM Plex Sans", system-ui, sans-serif;
+  --font-mono: var(--font-plex-mono), "IBM Plex Mono", ui-monospace, monospace;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  padding: 0;
+  margin: 0;
+  background: var(--ink-bg);
+  color: var(--paper);
+  font-family: var(--font-body);
+  min-height: 100vh;
+}
+
+body {
+  background-image:
+    repeating-linear-gradient(0deg, var(--grid-line) 0px, var(--grid-line) 1px, transparent 1px, transparent 32px),
+    repeating-linear-gradient(90deg, var(--grid-line) 0px, var(--grid-line) 1px, transparent 1px, transparent 32px);
+}
+
+a {
+  color: var(--signal-teal);
+}
+
+.eyebrow {
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--paper-dim);
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.field-input {
+  font-family: var(--font-mono);
+  font-size: 0.95rem;
+  background: transparent;
+  color: var(--paper);
+  border: none;
+  border-bottom: 1px solid var(--border);
+  padding: 0.55rem 0.1rem;
+  outline: none;
+  transition: border-color 0.15s ease;
+}
+
+.field-input:focus-visible {
+  border-bottom-color: var(--signal-amber);
+  outline: 2px solid var(--signal-amber);
+  outline-offset: 2px;
+}
+
+.field-input::placeholder {
+  color: #4a5a60;
+}
+
+.btn-primary {
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 0.95rem;
+  letter-spacing: 0.01em;
+  background: var(--signal-amber);
+  color: #1a1300;
+  border: none;
+  border-radius: 3px;
+  padding: 0.8rem 1.2rem;
+  cursor: pointer;
+  transition: filter 0.15s ease, transform 0.05s ease;
+}
+
+.btn-primary:hover:not(:disabled) {
+  filter: brightness(1.08);
+}
+
+.btn-primary:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+.btn-primary:disabled {
+  background: var(--border-bright);
+  color: var(--paper-dim);
+  cursor: default;
+}
+
+.btn-primary:focus-visible {
+  outline: 2px solid var(--signal-amber);
+  outline-offset: 3px;
+}
+
+.btn-secondary {
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+  background: transparent;
+  color: var(--paper);
+  border: 1px solid var(--border-bright);
+  border-radius: 3px;
+  padding: 0.55rem 0.9rem;
+  cursor: pointer;
+}
+
+.btn-secondary:hover {
+  border-color: var(--paper-dim);
+}
+
+.panel {
+  background: var(--ink-bg-raised);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+
+.status-badge {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  padding: 0.2rem 0.5rem;
+  border-radius: 2px;
+  border: 1px solid currentColor;
+}
+
+.status-badge--amber {
+  color: var(--signal-amber);
+}
+.status-badge--teal {
+  color: var(--signal-teal);
+}
+.status-badge--coral {
+  color: var(--signal-coral);
+}
+
+.scan-line-track {
+  position: relative;
+  height: 2px;
+  background: var(--border);
+  overflow: hidden;
+  border-radius: 2px;
+}
+
+.scan-line-track__fill {
+  position: absolute;
+  inset: 0;
+  background: var(--signal-teal);
+}
+
+.scan-line-track__sweep {
+  position: absolute;
+  top: 0;
+  left: -30%;
+  width: 30%;
+  height: 100%;
+  background: var(--signal-amber);
+  animation: sweep 1.6s ease-in-out infinite;
+}
+
+@keyframes sweep {
+  0% {
+    left: -30%;
+  }
+  100% {
+    left: 100%;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .scan-line-track__sweep {
+    animation: none;
+    left: 0;
+    width: 100%;
+    opacity: 0.5;
+  }
+}
+
+.stat {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
+.stat-value {
+  font-family: var(--font-mono);
+  font-size: 1.4rem;
+  color: var(--paper);
+}
+
+.stat-label {
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--paper-dim);
+}

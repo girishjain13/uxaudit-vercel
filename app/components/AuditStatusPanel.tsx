@@ -16,11 +16,19 @@ type AuditStatus = {
 };
 
 const STATUS_LABEL: Record<AuditStatus["status"], string> = {
-  queued: "Queued…",
+  queued: "Queued",
   crawling: "Crawling",
-  analyzing: "Analyzing results",
+  analyzing: "Analyzing",
   done: "Done",
   failed: "Failed",
+};
+
+const STATUS_BADGE_CLASS: Record<AuditStatus["status"], string> = {
+  queued: "status-badge status-badge--amber",
+  crawling: "status-badge status-badge--amber",
+  analyzing: "status-badge status-badge--amber",
+  done: "status-badge status-badge--teal",
+  failed: "status-badge status-badge--coral",
 };
 
 export function AuditStatusPanel({ auditId, onReset }: { auditId: string; onReset: () => void }) {
@@ -39,13 +47,12 @@ export function AuditStatusPanel({ auditId, onReset }: { auditId: string; onRese
         if (cancelled) return;
         setAudit(data);
         setPollError(null);
-        // Stop polling once the audit reaches a terminal state.
         if (data.status !== "done" && data.status !== "failed") {
           timer = setTimeout(poll, 3000);
         }
       } catch (err) {
         if (cancelled) return;
-        setPollError(err instanceof Error ? err.message : "Failed to check status");
+        setPollError(err instanceof Error ? err.message : "Could not reach the server.");
         timer = setTimeout(poll, 5000);
       }
     }
@@ -58,56 +65,73 @@ export function AuditStatusPanel({ auditId, onReset }: { auditId: string; onRese
   }, [auditId]);
 
   if (!audit) {
-    return <p>Loading status…</p>;
+    return (
+      <div className="panel" style={{ padding: "1.75rem" }}>
+        <span className="eyebrow">Connecting…</span>
+      </div>
+    );
   }
 
   const isActive = audit.status === "queued" || audit.status === "crawling" || audit.status === "analyzing";
+  const isTerminal = audit.status === "done" || audit.status === "failed";
 
   return (
-    <div
-      style={{
-        border: "1px solid #333",
-        borderRadius: 8,
-        padding: "1.25rem",
-        marginTop: "1.5rem",
-      }}
-    >
-      <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
-        {isActive && <Spinner />}
-        <strong>{STATUS_LABEL[audit.status]}</strong>
+    <div className="panel" style={{ padding: "1.75rem" }}>
+      {/* Signature element: a scan-line track. Sweeps amber while a scan
+          is active, settles into a solid teal or coral bar on completion. */}
+      <div className="scan-line-track" style={{ marginBottom: "1.25rem" }}>
+        {isActive && <div className="scan-line-track__sweep" />}
+        {isTerminal && (
+          <div
+            className="scan-line-track__fill"
+            style={{ background: audit.status === "done" ? "var(--signal-teal)" : "var(--signal-coral)" }}
+          />
+        )}
       </div>
-      <p style={{ color: "#666", margin: "0.5rem 0" }}>{audit.startUrl}</p>
-      <div style={{ display: "flex", gap: "1.5rem", fontSize: "0.9rem" }}>
-        <span>Pages crawled: {audit.pageCount}</span>
-        <span>Findings: {audit.findingCount}</span>
+
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "0.35rem" }}>
+        <span className={STATUS_BADGE_CLASS[audit.status]}>{STATUS_LABEL[audit.status]}</span>
       </div>
+
+      <p
+        style={{
+          fontFamily: "var(--font-mono)",
+          fontSize: "0.85rem",
+          color: "var(--paper-dim)",
+          margin: "0.5rem 0 1.5rem",
+          wordBreak: "break-all",
+        }}
+      >
+        {audit.startUrl}
+      </p>
+
+      <div style={{ display: "flex", gap: "2rem", marginBottom: audit.errorMessage || pollError ? "1.25rem" : 0 }}>
+        <div className="stat">
+          <span className="stat-value">{audit.pageCount}</span>
+          <span className="stat-label">Pages crawled</span>
+        </div>
+        <div className="stat">
+          <span className="stat-value">{audit.findingCount}</span>
+          <span className="stat-label">Findings</span>
+        </div>
+      </div>
+
       {audit.status === "failed" && audit.errorMessage && (
-        <p style={{ color: "#c00", marginTop: "0.75rem" }}>Error: {audit.errorMessage}</p>
+        <p style={{ color: "var(--signal-coral)", fontFamily: "var(--font-mono)", fontSize: "0.85rem" }}>
+          {audit.errorMessage}
+        </p>
       )}
-      {pollError && <p style={{ color: "#c60", marginTop: "0.75rem" }}>{pollError} — retrying…</p>}
-      {(audit.status === "done" || audit.status === "failed") && (
-        <button onClick={onReset} style={{ marginTop: "1rem" }}>
+      {pollError && (
+        <p style={{ color: "var(--signal-amber)", fontFamily: "var(--font-mono)", fontSize: "0.8rem" }}>
+          {pollError} — retrying…
+        </p>
+      )}
+
+      {isTerminal && (
+        <button onClick={onReset} className="btn-secondary" style={{ marginTop: "1.5rem" }}>
           Start another scan
         </button>
       )}
     </div>
-  );
-}
-
-function Spinner() {
-  return (
-    <span
-      style={{
-        display: "inline-block",
-        width: 14,
-        height: 14,
-        border: "2px solid #ccc",
-        borderTopColor: "#333",
-        borderRadius: "50%",
-        animation: "spin 0.8s linear infinite",
-      }}
-    >
-      <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
-    </span>
   );
 }

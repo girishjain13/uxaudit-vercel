@@ -25,78 +25,121 @@ export default function Home() {
           maxPages,
         }),
       });
-      const data = await res.json();
+      const text = await res.text();
+      const data = text ? JSON.parse(text) : null;
       if (!res.ok) {
-        throw new Error(data?.error ? JSON.stringify(data.error) : `Request failed (${res.status})`);
+        throw new Error(
+          data?.error ? JSON.stringify(data.error) : `Scan could not start (${res.status}). Check the server logs.`,
+        );
       }
       setActiveAuditId(data.auditId);
     } catch (err) {
-      setSubmitError(err instanceof Error ? err.message : "Failed to start scan");
+      setSubmitError(err instanceof Error ? err.message : "Scan could not start.");
     } finally {
       setSubmitting(false);
     }
   }
 
   return (
-    <main style={{ padding: "2rem", maxWidth: 560, fontFamily: "system-ui, sans-serif" }}>
-      <h1>UX Audit Crawler</h1>
-      <p style={{ color: "#666" }}>Enter a site to start a crawl and audit.</p>
+    <main
+      style={{
+        minHeight: "100vh",
+        display: "flex",
+        alignItems: "flex-start",
+        justifyContent: "center",
+        padding: "4rem 1.5rem",
+      }}
+    >
+      <div style={{ width: "100%", maxWidth: 520 }}>
+        <div style={{ marginBottom: "2rem" }}>
+          <div className="eyebrow" style={{ marginBottom: "0.5rem" }}>
+            Site Audit / New Scan
+          </div>
+          <h1
+            style={{
+              fontFamily: "var(--font-display)",
+              fontSize: "1.9rem",
+              fontWeight: 600,
+              margin: 0,
+              letterSpacing: "-0.01em",
+            }}
+          >
+            Audit a site
+          </h1>
+        </div>
 
-      {!activeAuditId ? (
-        <form onSubmit={handleSubmit} style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
-          <label>
-            Website URL
-            <input
-              type="url"
-              required
-              placeholder="https://example.com"
-              value={startUrl}
-              onChange={(e) => setStartUrl(e.target.value)}
-              style={inputStyle}
-            />
-          </label>
+        {!activeAuditId ? (
+          <form
+            onSubmit={handleSubmit}
+            className="panel"
+            style={{ padding: "1.75rem", display: "flex", flexDirection: "column", gap: "1.25rem" }}
+          >
+            <div className="field">
+              <label className="eyebrow" htmlFor="startUrl">
+                Website URL
+              </label>
+              <input
+                id="startUrl"
+                type="url"
+                required
+                placeholder="https://example.com"
+                value={startUrl}
+                onChange={(e) => setStartUrl(e.target.value)}
+                className="field-input"
+              />
+            </div>
 
-          <label>
-            Client name <span style={{ color: "#999" }}>(optional)</span>
-            <input
-              type="text"
-              placeholder="Acme Corp"
-              value={clientName}
-              onChange={(e) => setClientName(e.target.value)}
-              style={inputStyle}
-            />
-          </label>
+            <div className="field">
+              <label className="eyebrow" htmlFor="clientName">
+                Client name — optional
+              </label>
+              <input
+                id="clientName"
+                type="text"
+                placeholder="Derived from the URL if left blank"
+                value={clientName}
+                onChange={(e) => setClientName(e.target.value)}
+                className="field-input"
+              />
+            </div>
 
-          <label>
-            Max pages
-            <input
-              type="number"
-              min={1}
-              max={5000}
-              value={maxPages}
-              onChange={(e) => setMaxPages(Number(e.target.value))}
-              style={inputStyle}
-            />
-          </label>
+            <div className="field">
+              <label className="eyebrow" htmlFor="maxPages">
+                Max pages
+              </label>
+              <input
+                id="maxPages"
+                type="number"
+                min={1}
+                max={5000}
+                value={maxPages}
+                onChange={(e) => setMaxPages(Number(e.target.value))}
+                className="field-input"
+                style={{ maxWidth: 140 }}
+              />
+            </div>
 
-          <button type="submit" disabled={submitting} style={{ marginTop: "0.5rem", padding: "0.6rem" }}>
-            {submitting ? "Starting…" : "Start scan"}
-          </button>
+            <button type="submit" disabled={submitting} className="btn-primary" style={{ marginTop: "0.5rem" }}>
+              {submitting ? "Starting scan…" : "Start scan"}
+            </button>
 
-          {submitError && <p style={{ color: "#c00" }}>{submitError}</p>}
-        </form>
-      ) : (
-        <AuditStatusPanel auditId={activeAuditId} onReset={() => setActiveAuditId(null)} />
-      )}
+            {submitError && (
+              <p
+                style={{
+                  color: "var(--signal-coral)",
+                  fontFamily: "var(--font-mono)",
+                  fontSize: "0.85rem",
+                  margin: 0,
+                }}
+              >
+                {submitError}
+              </p>
+            )}
+          </form>
+        ) : (
+          <AuditStatusPanel auditId={activeAuditId} onReset={() => setActiveAuditId(null)} />
+        )}
+      </div>
     </main>
   );
 }
-
-const inputStyle: React.CSSProperties = {
-  display: "block",
-  width: "100%",
-  padding: "0.5rem",
-  marginTop: "0.25rem",
-  boxSizing: "border-box",
-};
-
