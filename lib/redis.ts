@@ -1,6 +1,30 @@
 import { Redis } from "@upstash/redis";
 
-export const redis = Redis.fromEnv();
+// Constructed lazily, on first use, for the same reason as lib/db/index.ts:
+// Redis.fromEnv() validates UPSTASH_REDIS_REST_URL/TOKEN immediately, and
+// Next.js's build-time "collecting page data" step imports this module
+// (transitively, via the route handlers) before those env vars are
+// necessarily relevant — an eager construction here crashed the build
+// itself rather than just a request that actually needed Redis.
+let _redis: Redis | null = null;
+
+function getRedis(): Redis {
+  if (_redis) return _redis;
+  if (!process.env.UPSTASH_REDIS_REST_URL || !process.env.UPSTASH_REDIS_REST_TOKEN) {
+    throw new Error(
+      "UPSTASH_REDIS_REST_URL / UPSTASH_REDIS_REST_TOKEN are not set. Add them in Vercel's " +
+        "Project Settings → Environment Variables, or in .env.local for local dev.",
+    );
+  }
+  _redis = Redis.fromEnv();
+  return _redis;
+}
+
+export const redis: Redis = new Proxy({} as Redis, {
+  get(_target, prop, receiver) {
+    return Reflect.get(getRedis() as object, prop, receiver);
+  },
+});
 
 /**
  * Atomic "have we already queued this URL for this audit" check.

@@ -147,4 +147,15 @@ async function finishAndMaybeAnalyze(auditId: string) {
 // Verifies the request actually came from QStash (signed), not an
 // arbitrary POST — important since this endpoint writes to the DB and
 // spends Browserless credits per call.
-export const POST = verifySignatureAppRouter(handler);
+//
+// verifySignatureAppRouter(handler) validates QSTASH_CURRENT_SIGNING_KEY /
+// QSTASH_NEXT_SIGNING_KEY the moment it's called — calling it directly at
+// module scope (`export const POST = verifySignatureAppRouter(handler)`)
+// meant Next.js's build-time page-data collection crashed on missing keys
+// before a single request ever came in. Wrapping happens inside POST
+// itself instead, so it only runs (and only needs those env vars) once an
+// actual request arrives.
+export async function POST(req: NextRequest) {
+  const verified = verifySignatureAppRouter(handler);
+  return verified(req);
+}

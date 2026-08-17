@@ -81,4 +81,9 @@ async function runBusinessAnalysis(auditId: string, allPages: (typeof pages.$inf
   //       into the one-page format the spec asks for
 }
 
-export const POST = verifySignatureAppRouter(handler);
+// See app/api/crawl/page/route.ts for why this wraps at request time
+// rather than module scope.
+export async function POST(req: NextRequest, ctx: { params: { auditId: string } }) {
+  const verified = verifySignatureAppRouter((r: NextRequest) => handler(r, ctx));
+  return verified(req);
+}
