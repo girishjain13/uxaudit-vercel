@@ -13,6 +13,104 @@ import * as cheerio from "cheerio";
 
 const BLOCK_TAGS = "p|div|h[1-6]|li|br|tr|td|section|article|header|footer|nav|ul|ol";
 
+/**
+ * Flesch Reading Ease. Syllable counting uses the standard vowel-group
+ * heuristic (no dictionary) — accurate for the vast majority of English
+ * words, occasionally off for irregular ones (e.g. silent-e edge cases).
+ * Good enough for a directional readability signal, not a precise
+ * linguistic measurement.
+ */
+export function fleschReadingEase(text: string): number | null {
+  const words = text.match(/[a-zA-Z']+/g) ?? [];
+  if (words.length < 20) return null; // too little text for a meaningful score
+
+  const sentences = text.split(/[.!?]+/).filter((s) => s.trim().length > 0);
+  const sentenceCount = Math.max(sentences.length, 1);
+
+  let syllableCount = 0;
+  for (const word of words) {
+    syllableCount += countSyllables(word);
+  }
+
+  const score =
+    206.835 - 1.015 * (words.length / sentenceCount) - 84.6 * (syllableCount / words.length);
+  return Math.round(score * 10) / 10;
+}
+
+function countSyllables(word: string): number {
+  const w = word.toLowerCase().replace(/[^a-z]/g, "");
+  if (!w) return 0;
+  const groups = w.match(/[aeiouy]+/g);
+  let count = groups ? groups.length : 1;
+  if (w.endsWith("e") && count > 1) count--;
+  return Math.max(count, 1);
+}
+
+/**
+ * Near-duplicate detection via shingling + Jaccard similarity — a real
+ * (if simple) alternative to the exact-hash matching used elsewhere,
+ * catching pages that are mostly the same with minor edits, not just
+ * byte-identical ones. Deliberately capped: this is O(n²) page-pair
+ * comparisons, so it's skipped above maxPages to keep an analysis run
+ * bounded on very large audits — a smarter approach (e.g. MinHash/LSH)
+ * would remove that cap, but isn't built here.
+ */
+export function findNearDuplicateClusters(
+  pages: { url: string; text: string }[],
+  { threshold = 0.75, shingleSize = 8, maxPages = 300 } = {},
+): { pages: string[] }[] {
+  if (pages.length > maxPages || pages.length < 2) return [];
+
+  const shingleSets = pages.map((p) => ({ url: p.url, shingles: shingles(p.text, shingleSize) }));
+
+  const parent = new Map<string, string>();
+  const find = (x: string): string => {
+    if (!parent.has(x)) parent.set(x, x);
+    if (parent.get(x) !== x) parent.set(x, find(parent.get(x)!));
+    return parent.get(x)!;
+  };
+  const union = (a: string, b: string) => {
+    const ra = find(a);
+    const rb = find(b);
+    if (ra !== rb) parent.set(ra, rb);
+  };
+
+  for (let i = 0; i < shingleSets.length; i++) {
+    for (let j = i + 1; j < shingleSets.length; j++) {
+      const a = shingleSets[i];
+      const b = shingleSets[j];
+      if (a.shingles.size === 0 || b.shingles.size === 0) continue;
+      if (jaccardSimilarity(a.shingles, b.shingles) >= threshold) {
+        union(a.url, b.url);
+      }
+    }
+  }
+
+  const clusters = new Map<string, Set<string>>();
+  for (const { url } of shingleSets) {
+    const root = find(url);
+    if (!clusters.has(root)) clusters.set(root, new Set());
+    clusters.get(root)!.add(url);
+  }
+
+  return [...clusters.values()].filter((c) => c.size > 1).map((c) => ({ pages: [...c] }));
+}
+
+function shingles(text: string, k: number): Set<string> {
+  const words = text.toLowerCase().match(WORD_PATTERN) ?? [];
+  const set = new Set<string>();
+  for (let i = 0; i <= words.length - k; i++) {
+    set.add(words.slice(i, i + k).join(" "));
+  }
+  return set;
+}
+
+function jaccardSimilarity(a: Set<string>, b: Set<string>): number {
+  let intersection = 0;
+  for (const x of a) if (b.has(x)) intersection++;
+  return intersection / (a.size + b.size - intersection);
+}
+
 export function extractVisibleText(html: string): string {
   // cheerio's .text() concatenates all descendant text nodes with no
   // whitespace inserted between sibling block elements — "<h1>Welcome</h1>

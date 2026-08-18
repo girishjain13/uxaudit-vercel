@@ -3,6 +3,14 @@ import { NextRequest, NextResponse } from "next/server";
 import { eq } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { audits, findings, links, pages } from "@/lib/db/schema";
+import { extractVisibleText, findNearDuplicateClusters, fleschReadingEase } from "@/lib/reportAnalysis";
+import {
+  detectCms,
+  detectJsFrameworks,
+  hasMixedContent,
+  hasPiiFormWithoutPrivacyLink,
+  looksLikeExposedStaging,
+} from "@/lib/techFingerprint";
 
 type Page = typeof pages.$inferSelect;
 
@@ -22,6 +30,11 @@ async function handler(req: NextRequest, { params }: { params: Promise<{ auditId
       ...findOrphanPages(allPages, allLinks, audit.startUrl),
       ...findMissingMetadata(allPages),
       ...findDuplicateTitles(allPages),
+      ...findAccessibilityViolations(allPages),
+      ...findTechStack(allPages),
+      ...findRiskFlags(allPages),
+      ...findNearDuplicateContent(allPages),
+      ...findLowReadability(allPages),
       buildScaleSummary(allPages),
     ];
 
@@ -188,6 +201,211 @@ function findDuplicateTitles(allPages: Page[]): NewFinding[] {
       affectedUrlsSample: affected.slice(0, 10).map((p) => p.url),
       affectedTemplate: null,
       detectionMethod: "Exact string match on the title field across crawled pages",
+    },
+  ];
+}
+
+// --- UX Lead: Accessibility (axe-core, aggregated by rule across pages) ---
+
+const AXE_IMPACT_TO_SEVERITY: Record<string, NewFinding["severity"]> = {
+  critical: "critical",
+  serious: "high",
+  moderate: "medium",
+  minor: "low",
+};
+
+function findAccessibilityViolations(allPages: Page[]): NewFinding[] {
+  // Aggregate by axe rule id across all pages — the spec's rollup
+  // requirement ("1 finding affecting 500 pages, not 500 rows") applies
+  // directly here: the same rule (e.g. "image-alt") firing on 40 pages
+  // becomes one finding, not 40.
+  const byRuleId = new Map<string, { impact: string; description: string; pages: Set<string> }>();
+  for (const p of allPages) {
+    for (const v of p.accessibilityViolations ?? []) {
+      if (!byRuleId.has(v.id)) {
+        byRuleId.set(v.id, { impact: v.impact, description: v.description, pages: new Set() });
+      }
+      byRuleId.get(v.id)!.pages.add(p.url);
+    }
+  }
+
+  return [...byRuleId.entries()].map(([ruleId, data]) => ({
+    findingType: "accessibility_violation",
+    title: `WCAG issue: ${data.description}`,
+    description: `axe-core rule "${ruleId}" (${data.impact} impact) triggered on ${data.pages.size} page(s).`,
+    severity: AXE_IMPACT_TO_SEVERITY[data.impact] ?? "medium",
+    effortBucket: "config",
+    personas: ["ux"],
+    affectedPageCount: data.pages.size,
+    affectedUrlsSample: [...data.pages].slice(0, 10),
+    affectedTemplate: null,
+    detectionMethod: `axe-core 4.x automated WCAG 2.1 AA scan, rule "${ruleId}"`,
+  }));
+}
+
+// --- Business Analyst: Tech stack fingerprinting (informational, not a "problem") ---
+
+function findTechStack(allPages: Page[]): NewFinding[] {
+  const cmsPages = new Map<string, Set<string>>();
+  const frameworkPages = new Map<string, Set<string>>();
+
+  for (const p of allPages) {
+    const html = p.renderedDomHtml || "";
+    if (!html) continue;
+    for (const cms of detectCms(html)) {
+      if (!cmsPages.has(cms)) cmsPages.set(cms, new Set());
+      cmsPages.get(cms)!.add(p.url);
+    }
+    for (const fw of detectJsFrameworks(html)) {
+      if (!frameworkPages.has(fw)) frameworkPages.set(fw, new Set());
+      frameworkPages.get(fw)!.add(p.url);
+    }
+  }
+
+  const out: NewFinding[] = [];
+  for (const [name, pageSet] of cmsPages) {
+    out.push({
+      findingType: "cms_detected",
+      title: `Detected platform: ${name}`,
+      description: `Signatures matching ${name} were found on ${pageSet.size} page(s).`,
+      severity: "low",
+      effortBucket: "ootb",
+      personas: ["business"],
+      affectedPageCount: pageSet.size,
+      affectedUrlsSample: [...pageSet].slice(0, 10),
+      affectedTemplate: null,
+      detectionMethod: "HTML path/meta-tag signature match",
+    });
+  }
+  for (const [name, pageSet] of frameworkPages) {
+    out.push({
+      findingType: "js_framework_detected",
+      title: `Detected JS framework: ${name}`,
+      description: `Signatures matching ${name} were found on ${pageSet.size} page(s) — relevant for migration/replatforming effort scoping.`,
+      severity: "low",
+      effortBucket: "ootb",
+      personas: ["business"],
+      affectedPageCount: pageSet.size,
+      affectedUrlsSample: [...pageSet].slice(0, 10),
+      affectedTemplate: null,
+      detectionMethod: "DOM attribute/global-variable signature match",
+    });
+  }
+  return out;
+}
+
+// --- Business Analyst: Risk flags ---
+
+function findRiskFlags(allPages: Page[]): NewFinding[] {
+  const out: NewFinding[] = [];
+
+  const mixedContentPages = allPages.filter((p) => p.renderedDomHtml && hasMixedContent(p.renderedDomHtml, p.url));
+  if (mixedContentPages.length) {
+    out.push({
+      findingType: "mixed_content",
+      title: `${mixedContentPages.length} page(s) load insecure (HTTP) resources on an HTTPS page`,
+      description:
+        "Mixed content causes browser warnings and can be silently blocked, breaking images/scripts/styles for users.",
+      severity: "high",
+      effortBucket: "config",
+      personas: ["business", "ux"],
+      affectedPageCount: mixedContentPages.length,
+      affectedUrlsSample: mixedContentPages.slice(0, 10).map((p) => p.url),
+      affectedTemplate: null,
+      detectionMethod: "HTTP-scheme src/href found on an HTTPS page",
+    });
+  }
+
+  const stagingPages = allPages.filter((p) => looksLikeExposedStaging(p.url));
+  if (stagingPages.length) {
+    out.push({
+      findingType: "exposed_staging",
+      title: `${stagingPages.length} page(s) appear to be on a staging/dev subdomain`,
+      description:
+        "URLs matching common staging/dev/test naming patterns were reachable during this crawl — worth confirming these aren't unintentionally public.",
+      severity: "medium",
+      effortBucket: "config",
+      personas: ["business"],
+      affectedPageCount: stagingPages.length,
+      affectedUrlsSample: stagingPages.slice(0, 10).map((p) => p.url),
+      affectedTemplate: null,
+      detectionMethod: "Hostname pattern match (staging/dev/test/uat/preprod/qa)",
+    });
+  }
+
+  const piiPages = allPages.filter((p) => p.renderedDomHtml && hasPiiFormWithoutPrivacyLink(p.renderedDomHtml));
+  if (piiPages.length) {
+    out.push({
+      findingType: "pii_without_privacy_link",
+      title: `${piiPages.length} page(s) have a form collecting personal data with no visible privacy-policy link`,
+      description:
+        "Heuristic signal, not a compliance determination — worth a manual check on these forms and their surrounding disclosures.",
+      severity: "medium",
+      effortBucket: "config",
+      personas: ["business"],
+      affectedPageCount: piiPages.length,
+      affectedUrlsSample: piiPages.slice(0, 10).map((p) => p.url),
+      affectedTemplate: null,
+      detectionMethod: "Form field type/name heuristic + absence of a nearby 'privacy' link",
+    });
+  }
+
+  return out;
+}
+
+// --- Content Strategist: near-duplicate content (shingling + Jaccard, not just exact hash) ---
+
+function findNearDuplicateContent(allPages: Page[]): NewFinding[] {
+  const withText = allPages
+    .filter((p) => p.renderedDomHtml)
+    .map((p) => ({ url: p.url, text: extractVisibleText(p.renderedDomHtml!) }));
+
+  const clusters = findNearDuplicateClusters(withText);
+  if (!clusters.length) return [];
+
+  const totalAffected = clusters.reduce((sum, c) => sum + c.pages.length, 0);
+  return [
+    {
+      findingType: "near_duplicate_content",
+      title: `${clusters.length} cluster(s) of near-duplicate pages found (${totalAffected} pages total)`,
+      description:
+        "These pages are textually very similar (≥75% shingle overlap) without being byte-identical — usually a sign of thin templated content or copy-pasted pages.",
+      severity: "medium",
+      effortBucket: "config",
+      personas: ["content"],
+      affectedPageCount: totalAffected,
+      affectedUrlsSample: clusters[0].pages.slice(0, 10),
+      affectedTemplate: null,
+      detectionMethod: "8-word shingling + Jaccard similarity across extracted page text, threshold 0.75",
+    },
+  ];
+}
+
+// --- Content Strategist: readability ---
+
+function findLowReadability(allPages: Page[]): NewFinding[] {
+  const scored = allPages
+    .filter((p) => p.renderedDomHtml)
+    .map((p) => ({ url: p.url, score: fleschReadingEase(extractVisibleText(p.renderedDomHtml!)) }))
+    .filter((p): p is { url: string; score: number } => p.score !== null);
+
+  const difficult = scored.filter((p) => p.score < 30); // Flesch < 30 ≈ "very difficult"
+  if (!difficult.length) return [];
+
+  return [
+    {
+      findingType: "low_readability",
+      title: `${difficult.length} page(s) score as "very difficult to read"`,
+      description:
+        `Flesch Reading Ease below 30 (college-graduate level or harder) on ${difficult.length} page(s) — ` +
+        "worth reviewing for plain-language opportunities, especially on customer-facing content.",
+      severity: "low",
+      effortBucket: "custom_dev",
+      personas: ["content"],
+      affectedPageCount: difficult.length,
+      affectedUrlsSample: difficult.slice(0, 10).map((p) => p.url),
+      affectedTemplate: null,
+      detectionMethod: "Flesch Reading Ease formula computed on extracted visible text",
     },
   ];
 }

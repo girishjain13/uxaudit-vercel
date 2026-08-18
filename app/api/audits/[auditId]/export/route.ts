@@ -9,6 +9,7 @@ import {
   countImagesAndMissingAlt,
   extractScripts,
   extractVisibleText,
+  fleschReadingEase,
   hasSchemaOrg,
   pathDepth,
   textHash,
@@ -101,6 +102,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ audi
       "Internal Links Out": internalLinksOutByUrl.get(d.page.url) ?? 0,
       Scripts: d.scriptsTotal,
       "External Scripts": d.externalDomains.length,
+      Readability: d.text ? fleschReadingEase(d.text) : null,
       Error: d.page.error,
     })),
   );
@@ -171,10 +173,43 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ audi
     })),
   );
 
+  const accessibilitySheet = XLSX.utils.json_to_sheet(
+    allFindings
+      .filter((f) => f.findingType === "accessibility_violation")
+      .map((f) => ({
+        Issue: f.title,
+        Severity: f.severity,
+        "Affected Pages": f.affectedPageCount,
+        "Sample URLs": f.affectedUrlsSample.join("\n"),
+        "Detection Method": f.detectionMethod,
+      })),
+  );
+
+  const techAndRiskTypes = new Set([
+    "cms_detected",
+    "js_framework_detected",
+    "mixed_content",
+    "exposed_staging",
+    "pii_without_privacy_link",
+  ]);
+  const techAndRiskSheet = XLSX.utils.json_to_sheet(
+    allFindings
+      .filter((f) => techAndRiskTypes.has(f.findingType))
+      .map((f) => ({
+        Category: f.findingType.startsWith("cms") || f.findingType.startsWith("js_framework") ? "Tech Stack" : "Risk",
+        Title: f.title,
+        Severity: f.severity,
+        "Affected Pages": f.affectedPageCount,
+        Description: f.description,
+      })),
+  );
+
   const workbook = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(workbook, overviewSheet, "Overview");
   XLSX.utils.book_append_sheet(workbook, heuristicSheet, "Heuristic Evaluation");
   XLSX.utils.book_append_sheet(workbook, actionPlanSheet, "Action Plan");
+  XLSX.utils.book_append_sheet(workbook, accessibilitySheet, "Accessibility");
+  XLSX.utils.book_append_sheet(workbook, techAndRiskSheet, "Tech Stack & Risks");
   XLSX.utils.book_append_sheet(workbook, keywordsSheet, "Keywords");
   XLSX.utils.book_append_sheet(workbook, integrationsSheet, "Integrations");
   XLSX.utils.book_append_sheet(workbook, pageInventorySheet, "Page Inventory");

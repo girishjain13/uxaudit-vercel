@@ -93,6 +93,11 @@ export const pages = pgTable(
     clsScore: doublePrecision("cls_score"),
     inpMs: doublePrecision("inp_ms"),
 
+    accessibilityViolations: jsonb("accessibility_violations")
+      .$type<{ id: string; impact: string; description: string; nodesCount: number }[]>()
+      .notNull()
+      .default([]),
+
     error: varchar("error", { length: 200 }),
   },
   (table) => ({

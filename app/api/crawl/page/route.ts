@@ -61,6 +61,7 @@ async function handler(req: NextRequest) {
         lcpMs: result.lcpMs,
         clsScore: result.clsScore,
         inpMs: result.inpMs,
+        accessibilityViolations: result.accessibilityViolations,
         error: result.error,
       })
       .returning();

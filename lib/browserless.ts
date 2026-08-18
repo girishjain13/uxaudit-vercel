@@ -30,6 +30,7 @@ export type RenderResult = {
   videos: string[];
   documents: string[];
   interactions: { type: string; selector: string }[];
+  accessibilityViolations: { id: string; impact: string; description: string; nodesCount: number }[];
   screenshots: Record<"mobile" | "tablet" | "desktop", Buffer>;
   screenshotFlags: Record<string, { hasHorizontalScroll: boolean; hasSmallTapTargets: boolean }>;
   lcpMs: number | null;
@@ -90,6 +91,7 @@ export async function renderPage(url: string, rootHost: string): Promise<RenderR
     videos: data.videos ?? [],
     documents: data.documents ?? [],
     interactions: data.interactions ?? [],
+    accessibilityViolations: data.accessibilityViolations ?? [],
     screenshots: {
       mobile: Buffer.from(data.screenshots?.mobile ?? "", "base64"),
       tablet: Buffer.from(data.screenshots?.tablet ?? "", "base64"),
@@ -122,6 +124,7 @@ function errorResult(url: string, error: string, responseTimeMs: number): Render
     videos: [],
     documents: [],
     interactions: [],
+    accessibilityViolations: [],
     screenshots: { mobile: Buffer.alloc(0), tablet: Buffer.alloc(0), desktop: Buffer.alloc(0) },
     screenshotFlags: {},
     lcpMs: null,
@@ -173,7 +176,16 @@ function buildInBrowserScript(url: string, rootHost: string): string {
           seenLinks.add(full);
           try {
             const host = new URL(full).host;
-            if (host === rootHost) internalLinks.push(full);
+            // Exact host equality was the actual bug behind "crawl only
+            // covers 1 page": real sites very commonly mix www/non-www
+            // (or redirect between them) for the same logical site. An
+            // exact string mismatch there silently classified every link
+            // as external, so nothing new ever got queued after the seed
+            // page. Stripping "www." from both sides before comparing
+            // fixes the common case without over-matching unrelated
+            // sites that happen to share a suffix.
+            const normalize = (h) => h.replace(/^www\\./, "");
+            if (normalize(host) === normalize(rootHost)) internalLinks.push(full);
             else externalLinks.push(full);
           } catch {
             /* skip unparseable */
@@ -227,6 +239,26 @@ function buildInBrowserScript(url: string, rootHost: string): string {
         };
       }, rootHost);
 
+      // Automated WCAG 2.1 AA scan via axe-core, injected from CDN. Wrapped
+      // defensively: if the target page's CSP blocks the injected script,
+      // or axe throws for any reason, the crawl continues with an empty
+      // violations list rather than failing the whole page.
+      let accessibilityViolations = [];
+      try {
+        await page.addScriptTag({ url: "https://cdnjs.cloudflare.com/ajax/libs/axe-core/4.10.2/axe.min.js" });
+        accessibilityViolations = await page.evaluate(async () => {
+          const results = await axe.run(document, { resultTypes: ["violations"] });
+          return results.violations.map((v) => ({
+            id: v.id,
+            impact: v.impact || "minor",
+            description: v.help,
+            nodesCount: v.nodes.length,
+          }));
+        });
+      } catch {
+        accessibilityViolations = [];
+      }
+
       const screenshots = {};
       const screenshotFlags = {};
       const breakpoints = ${JSON.stringify(BREAKPOINTS)};
@@ -261,6 +293,7 @@ function buildInBrowserScript(url: string, rootHost: string): string {
           inpMs: null,
           screenshots,
           screenshotFlags,
+          accessibilityViolations,
           ...extracted,
         },
         type: "application/json",
