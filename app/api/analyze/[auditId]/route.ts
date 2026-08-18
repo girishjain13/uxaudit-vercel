@@ -4,6 +4,7 @@ import { eq } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { audits, findings, links, pages } from "@/lib/db/schema";
 import { extractVisibleText, findNearDuplicateClusters, fleschReadingEase } from "@/lib/reportAnalysis";
+import { runTemplateAnalysis, structuralFingerprint } from "@/lib/templates";
 import {
   detectCms,
   detectJsFrameworks,
@@ -24,6 +25,18 @@ async function handler(req: NextRequest, { params }: { params: Promise<{ auditId
     const allPages = await db.select().from(pages).where(eq(pages.auditId, auditId));
     const allLinks = await db.select().from(links).where(eq(links.auditId, auditId));
 
+    // Compute + persist each page's structural fingerprint before running
+    // the rollup — pages.templateFingerprint existed in the schema from
+    // the start but was never populated until now.
+    for (const p of allPages) {
+      if (!p.renderedDomHtml) continue;
+      const fingerprint = structuralFingerprint(p.renderedDomHtml);
+      if (fingerprint) {
+        await db.update(pages).set({ templateFingerprint: fingerprint }).where(eq(pages.id, p.id));
+        p.templateFingerprint = fingerprint; // keep the in-memory copy in sync for the findings below
+      }
+    }
+
     const newFindings = [
       ...findBrokenLinks(allPages),
       ...findMissingH1(allPages),
@@ -35,6 +48,7 @@ async function handler(req: NextRequest, { params }: { params: Promise<{ auditId
       ...findRiskFlags(allPages),
       ...findNearDuplicateContent(allPages),
       ...findLowReadability(allPages),
+      ...findTemplateRollup(allPages),
       buildScaleSummary(allPages),
     ];
 
@@ -203,6 +217,62 @@ function findDuplicateTitles(allPages: Page[]): NewFinding[] {
       detectionMethod: "Exact string match on the title field across crawled pages",
     },
   ];
+}
+
+// --- UX Lead / Business Analyst: template-level rollup ---
+// This is the spec's core architecture requirement ("findings must be
+// aggregated at the template/pattern level, not just page level") made
+// visible as its own finding, not just an implementation detail of how
+// other findings are counted.
+
+function findTemplateRollup(allPages: Page[]): NewFinding[] {
+  const analysis = runTemplateAnalysis(
+    allPages.map((p) => ({
+      url: p.url,
+      title: p.title,
+      statusCode: p.statusCode,
+      templateFingerprint: p.templateFingerprint,
+    })),
+  );
+
+  if (analysis.pagesAnalyzed === 0) return [];
+
+  const out: NewFinding[] = [
+    {
+      findingType: "template_rollup",
+      title: `${analysis.uniqueTemplateCount} distinct page template(s) detected across ${analysis.pagesAnalyzed} page(s)`,
+      description:
+        `${analysis.templatesWithReuse} template(s) are reused across 2+ pages; the largest covers ` +
+        `${analysis.templates[0]?.pageCount ?? 0} page(s) (example: ${analysis.templates[0]?.exampleUrl ?? "n/a"}). ` +
+        "Fewer distinct templates generally means a more consistent, cheaper-to-maintain site.",
+      severity: "low",
+      effortBucket: "ootb",
+      personas: ["ux", "business"],
+      affectedPageCount: analysis.pagesAnalyzed,
+      affectedUrlsSample: analysis.templates[0]?.sampleUrls ?? [],
+      affectedTemplate: analysis.templates[0]?.fingerprint ?? null,
+      detectionMethod: "DOM structural-skeleton hashing (tag + top-level classes, siblings collapsed) via lib/templates.ts",
+    },
+  ];
+
+  if (analysis.oneOffCount > 0) {
+    out.push({
+      findingType: "one_off_template",
+      title: `${analysis.oneOffCount} page(s) use a layout no other page on the site shares`,
+      description:
+        "These pages are structural outliers — either a legitimately special page (a campaign landing page, a " +
+        "one-time announcement) or drift from the design system worth a second look.",
+      severity: "low",
+      effortBucket: "custom_dev",
+      personas: ["ux"],
+      affectedPageCount: analysis.oneOffCount,
+      affectedUrlsSample: analysis.oneOffPages.slice(0, 10).map((p) => p.url),
+      affectedTemplate: null,
+      detectionMethod: "Structural fingerprint with exactly 1 matching page across the crawl",
+    });
+  }
+
+  return out;
 }
 
 // --- UX Lead: Accessibility (axe-core, aggregated by rule across pages) ---

@@ -59,7 +59,7 @@ export default function Home() {
         </div>
       </div>
 
-      <div className="wrap">
+      <div className="wrap narrow">
         {!activeAuditId ? (
           <div className="section">
             <div className="card">

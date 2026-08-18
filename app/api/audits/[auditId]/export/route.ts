@@ -4,18 +4,8 @@ import * as XLSX from "xlsx";
 import { db } from "@/lib/db";
 import { audits, findings, links, pages } from "@/lib/db/schema";
 import { urlToNetloc } from "@/lib/url";
-import {
-  classifyIntegrations,
-  countImagesAndMissingAlt,
-  extractScripts,
-  extractVisibleText,
-  fleschReadingEase,
-  hasSchemaOrg,
-  pathDepth,
-  textHash,
-  topKeywords,
-  topPhrases,
-} from "@/lib/reportAnalysis";
+import { classifyIntegrations, countImagesAndMissingAlt, extractScripts, extractVisibleText, fleschReadingEase, hasSchemaOrg, pathDepth, textHash, topKeywords, topPhrases } from "@/lib/reportAnalysis";
+import { runTemplateAnalysis } from "@/lib/templates";
 
 type Page = typeof pages.$inferSelect;
 type Finding = typeof findings.$inferSelect;
@@ -204,12 +194,31 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ audi
       })),
   );
 
+  const templateAnalysis = runTemplateAnalysis(
+    allPages.map((p) => ({
+      url: p.url,
+      title: p.title,
+      statusCode: p.statusCode,
+      templateFingerprint: p.templateFingerprint,
+    })),
+  );
+  const templatesSheet = XLSX.utils.json_to_sheet(
+    templateAnalysis.templates.map((t) => ({
+      Fingerprint: t.fingerprint,
+      "Page Count": t.pageCount,
+      "Example URL": t.exampleUrl,
+      "Example Title": t.exampleTitle,
+      "Sample URLs": t.sampleUrls.join("\n"),
+    })),
+  );
+
   const workbook = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(workbook, overviewSheet, "Overview");
   XLSX.utils.book_append_sheet(workbook, heuristicSheet, "Heuristic Evaluation");
   XLSX.utils.book_append_sheet(workbook, actionPlanSheet, "Action Plan");
   XLSX.utils.book_append_sheet(workbook, accessibilitySheet, "Accessibility");
   XLSX.utils.book_append_sheet(workbook, techAndRiskSheet, "Tech Stack & Risks");
+  XLSX.utils.book_append_sheet(workbook, templatesSheet, "Templates");
   XLSX.utils.book_append_sheet(workbook, keywordsSheet, "Keywords");
   XLSX.utils.book_append_sheet(workbook, integrationsSheet, "Integrations");
   XLSX.utils.book_append_sheet(workbook, pageInventorySheet, "Page Inventory");

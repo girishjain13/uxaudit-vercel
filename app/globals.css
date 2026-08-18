@@ -91,9 +91,12 @@ h1, h2, h3 {
 }
 
 .wrap {
-  max-width: 640px;
+  max-width: 1080px;
   margin: 0 auto;
   padding: 0 24px 72px;
+}
+.wrap.narrow {
+  max-width: 640px;
 }
 
 .section {
@@ -267,4 +270,218 @@ details summary {
 }
 .badge-status.failed {
   background: var(--coral);
+}
+
+/* ---- score cards ---- */
+.score-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 14px;
+}
+.score-card {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 20px 16px;
+  text-align: center;
+}
+.score-card .num {
+  font-family: var(--font-display);
+  font-size: 38px;
+  line-height: 1;
+}
+.score-card .label {
+  font-size: 12.5px;
+  font-weight: 600;
+  margin-top: 8px;
+}
+.score-card .plain {
+  font-size: 12px;
+  color: var(--ink-dim);
+  margin-top: 6px;
+  line-height: 1.4;
+}
+.score-card.band-Strong .num {
+  color: var(--sage);
+}
+.score-card.band-Adequate .num {
+  color: var(--accent);
+}
+.score-card.band-Needs-Improvement .num {
+  color: var(--amber);
+}
+.score-card.band-Critical .num {
+  color: var(--coral);
+}
+
+/* ---- heuristic cards ---- */
+.heuristic-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+}
+.heuristic-card {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 18px 20px;
+}
+.heuristic-card.not-assessed {
+  background: var(--surface-2);
+  box-shadow: none;
+}
+.heuristic-card .htop {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 10px;
+}
+.heuristic-card h3 {
+  font-size: 16px;
+}
+.heuristic-card .blurb {
+  color: var(--ink-dim);
+  font-size: 13px;
+  margin-top: 4px;
+}
+.sev-badge {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 3px 10px;
+  border-radius: 20px;
+  white-space: nowrap;
+}
+.sev-badge.sev-critical {
+  background: var(--coral);
+  color: #fff;
+}
+.sev-badge.sev-high {
+  background: rgba(178, 58, 52, 0.14);
+  color: var(--coral);
+}
+.sev-badge.sev-medium {
+  background: rgba(184, 134, 43, 0.14);
+  color: var(--amber);
+}
+.sev-badge.sev-low {
+  background: rgba(79, 122, 92, 0.12);
+  color: var(--sage);
+}
+.sev-badge.na {
+  background: transparent;
+  color: var(--ink-faint);
+  border: 1px dashed var(--ink-faint);
+}
+
+/* ---- tables ---- */
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13.5px;
+}
+th, td {
+  text-align: left;
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--line);
+}
+th {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--ink-faint);
+  position: sticky;
+  top: 0;
+  background: var(--surface);
+}
+td.url-cell {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--ink-dim);
+}
+.table-scroll {
+  max-height: 420px;
+  overflow-y: auto;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+}
+
+.tag {
+  display: inline-block;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  padding: 1px 7px;
+  border-radius: 20px;
+}
+.tag.ok {
+  background: rgba(79, 122, 92, 0.12);
+  color: var(--sage);
+}
+.tag.warn {
+  background: rgba(184, 134, 43, 0.12);
+  color: var(--amber);
+}
+.tag.bad {
+  background: rgba(178, 58, 52, 0.12);
+  color: var(--coral);
+}
+
+/* ---- action plan ---- */
+.action-item {
+  display: flex;
+  gap: 12px;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--line);
+  align-items: flex-start;
+}
+.action-item:last-child {
+  border-bottom: none;
+}
+.pill {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  text-transform: uppercase;
+  padding: 3px 9px;
+  border-radius: 20px;
+  white-space: nowrap;
+  margin-top: 2px;
+}
+.pill.high {
+  background: rgba(178, 58, 52, 0.14);
+  color: var(--coral);
+}
+.pill.medium {
+  background: rgba(184, 134, 43, 0.14);
+  color: var(--amber);
+}
+.pill.low {
+  background: rgba(79, 122, 92, 0.12);
+  color: var(--sage);
+}
+.action-area {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--ink-faint);
+  min-width: 90px;
+  padding-top: 3px;
+}
+
+.summary-card {
+  background: var(--surface);
+  border-radius: var(--radius);
+  border: 1px solid var(--line);
+  box-shadow: var(--shadow);
+  padding: 26px 28px;
+}
+
+@media (max-width: 900px) {
+  .score-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+  .heuristic-grid {
+    grid-template-columns: 1fr;
+  }
 }
