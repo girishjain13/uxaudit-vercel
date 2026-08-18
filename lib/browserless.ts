@@ -67,10 +67,25 @@ export async function renderPage(url: string, rootHost: string): Promise<RenderR
   });
 
   if (!res.ok) {
-    return errorResult(url, `browserless_http_${res.status}`, Date.now() - started);
+    let bodySnippet = "";
+    try {
+      bodySnippet = (await res.text()).slice(0, 500);
+    } catch {
+      /* response body unreadable — fall back to status code alone */
+    }
+    return errorResult(url, `browserless_http_${res.status}: ${bodySnippet}`, Date.now() - started);
   }
 
-  const data = (await res.json()) as any;
+  const rawData = (await res.json()) as any;
+  // Every extracted field falling back to its default (null/0/false/[])
+  // with no thrown error is the signature of reading the wrong nesting
+  // level, not of a real failure. Browserless's /function contract has
+  // your script return { data, type }, expecting to unwrap `data` as the
+  // actual response body — if that unwrapping doesn't happen the way we
+  // assumed, `rawData.finalUrl` would be undefined while `rawData.data.finalUrl`
+  // holds the real value. Handling both shapes costs nothing and removes
+  // the guesswork.
+  const data = rawData?.data && typeof rawData.data === "object" ? rawData.data : rawData;
   const responseTimeMs = Date.now() - started;
 
   return {
@@ -101,7 +116,10 @@ export async function renderPage(url: string, rootHost: string): Promise<RenderR
     lcpMs: data.lcpMs ?? null,
     clsScore: data.clsScore ?? null,
     inpMs: data.inpMs ?? null,
-    error: null,
+    error:
+      data.finalUrl == null && data.statusCode == null && data.title == null && !data.internalLinks?.length
+        ? `browserless_empty_payload: response had status ${res.status} but no usable fields after unwrapping — raw keys: ${Object.keys(rawData ?? {}).join(",")}`
+        : null,
   };
 }
 

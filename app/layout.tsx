@@ -1,16 +1,16 @@
-import { IBM_Plex_Mono, IBM_Plex_Sans, Space_Grotesk } from "next/font/google";
+import { Fraunces, IBM_Plex_Mono, Inter } from "next/font/google";
 import "./globals.css";
 
-const spaceGrotesk = Space_Grotesk({
+const fraunces = Fraunces({
   subsets: ["latin"],
-  variable: "--font-space-grotesk",
-  weight: ["500", "600", "700"],
+  variable: "--font-fraunces",
+  weight: ["400", "500", "600"],
 });
 
-const plexSans = IBM_Plex_Sans({
+const inter = Inter({
   subsets: ["latin"],
-  variable: "--font-plex-sans",
-  weight: ["400", "500"],
+  variable: "--font-inter",
+  weight: ["400", "500", "600", "700"],
 });
 
 const plexMono = IBM_Plex_Mono({
@@ -20,13 +20,13 @@ const plexMono = IBM_Plex_Mono({
 });
 
 export const metadata = {
-  title: "UX Audit Crawler",
-  description: "Website audit crawler — enter a URL to start a scan.",
+  title: "UX & IA Audit Tool",
+  description: "Type a URL, run it, and get back a heuristic evaluation of the site.",
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en" className={`${spaceGrotesk.variable} ${plexSans.variable} ${plexMono.variable}`}>
+    <html lang="en" className={`${fraunces.variable} ${inter.variable} ${plexMono.variable}`}>
       <body>{children}</body>
     </html>
   );

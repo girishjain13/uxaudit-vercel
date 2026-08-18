@@ -98,7 +98,7 @@ export const pages = pgTable(
       .notNull()
       .default([]),
 
-    error: varchar("error", { length: 200 }),
+    error: varchar("error", { length: 2000 }),
   },
   (table) => ({
     uniqueAuditUrl: uniqueIndex("uq_audit_page_url").on(table.auditId, table.url),

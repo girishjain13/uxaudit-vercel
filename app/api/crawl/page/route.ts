@@ -148,7 +148,7 @@ async function handler(req: NextRequest) {
     console.error(`[crawl/page] audit=${auditId} url=${url} depth=${depth}:`, err);
 
     try {
-      await db.insert(pages).values({ auditId, url, depth, error: message });
+      await db.insert(pages).values({ auditId, url, depth, error: message.slice(0, 2000) });
     } catch {
       // best-effort — don't let a failed error-log write mask the real error
     }

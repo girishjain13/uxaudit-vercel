@@ -16,19 +16,19 @@ type AuditStatus = {
 };
 
 const STATUS_LABEL: Record<AuditStatus["status"], string> = {
-  queued: "Queued",
-  crawling: "Crawling",
-  analyzing: "Analyzing",
-  done: "Done",
-  failed: "Failed",
+  queued: "QUEUED",
+  crawling: "CRAWLING",
+  analyzing: "ANALYZING",
+  done: "DONE",
+  failed: "FAILED",
 };
 
-const STATUS_BADGE_CLASS: Record<AuditStatus["status"], string> = {
-  queued: "status-badge status-badge--amber",
-  crawling: "status-badge status-badge--amber",
-  analyzing: "status-badge status-badge--amber",
-  done: "status-badge status-badge--teal",
-  failed: "status-badge status-badge--coral",
+const STATUS_DETAIL: Record<AuditStatus["status"], string> = {
+  queued: "Waiting for the run to start…",
+  crawling: "Crawling the site page by page…",
+  analyzing: "Crawl finished — rolling findings up into the report…",
+  done: "Finished — the report is ready below.",
+  failed: "The run hit an error.",
 };
 
 export function AuditStatusPanel({ auditId, onReset }: { auditId: string; onReset: () => void }) {
@@ -66,75 +66,66 @@ export function AuditStatusPanel({ auditId, onReset }: { auditId: string; onRese
 
   if (!audit) {
     return (
-      <div className="panel" style={{ padding: "1.75rem" }}>
-        <span className="eyebrow">Connecting…</span>
+      <div className="card">
+        <span className="small-dim">Connecting…</span>
       </div>
     );
   }
 
   const isActive = audit.status === "queued" || audit.status === "crawling" || audit.status === "analyzing";
   const isTerminal = audit.status === "done" || audit.status === "failed";
+  const badgeClass = audit.status === "done" ? "done" : audit.status === "failed" ? "failed" : "";
 
   return (
-    <div className="panel" style={{ padding: "1.75rem" }}>
-      {/* Signature element: a scan-line track. Sweeps amber while a scan
-          is active, settles into a solid teal or coral bar on completion. */}
-      <div className="scan-line-track" style={{ marginBottom: "1.25rem" }}>
-        {isActive && <div className="scan-line-track__sweep" />}
-        {isTerminal && (
-          <div
-            className="scan-line-track__fill"
-            style={{ background: audit.status === "done" ? "var(--signal-teal)" : "var(--signal-coral)" }}
-          />
-        )}
-      </div>
-
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "0.35rem" }}>
-        <span className={STATUS_BADGE_CLASS[audit.status]}>{STATUS_LABEL[audit.status]}</span>
-      </div>
-
-      <p
-        style={{
-          fontFamily: "var(--font-mono)",
-          fontSize: "0.85rem",
-          color: "var(--paper-dim)",
-          margin: "0.5rem 0 1.5rem",
-          wordBreak: "break-all",
-        }}
-      >
+    <div className="card">
+      <span className={`badge-status ${badgeClass}`}>{STATUS_LABEL[audit.status]}</span>
+      <p className="small-dim" style={{ marginTop: 14 }}>
+        {STATUS_DETAIL[audit.status]}
+      </p>
+      <p className="small-dim" style={{ fontFamily: "var(--font-mono)", marginTop: 4, wordBreak: "break-all" }}>
         {audit.startUrl}
       </p>
 
-      <div style={{ display: "flex", gap: "2rem", marginBottom: audit.errorMessage || pollError ? "1.25rem" : 0 }}>
+      <div className="progress-outer" style={{ marginTop: 16 }}>
+        <div
+          className={`progress-inner ${isActive ? "indeterminate" : ""}`}
+          style={{
+            width: isTerminal ? "100%" : undefined,
+            background: audit.status === "failed" ? "var(--coral)" : audit.status === "done" ? "var(--sage)" : undefined,
+          }}
+        />
+      </div>
+
+      <div className="stat-row">
         <div className="stat">
-          <span className="stat-value">{audit.pageCount}</span>
-          <span className="stat-label">Pages crawled</span>
+          <div className="v">{audit.pageCount}</div>
+          <div className="l">Pages crawled</div>
         </div>
         <div className="stat">
-          <span className="stat-value">{audit.findingCount}</span>
-          <span className="stat-label">Findings</span>
+          <div className="v">{audit.findingCount}</div>
+          <div className="l">Findings</div>
         </div>
       </div>
 
       {audit.status === "failed" && audit.errorMessage && (
-        <p style={{ color: "var(--signal-coral)", fontFamily: "var(--font-mono)", fontSize: "0.85rem" }}>
+        <p className="small-dim" style={{ color: "var(--coral)" }}>
           {audit.errorMessage}
         </p>
       )}
       {pollError && (
-        <p style={{ color: "var(--signal-amber)", fontFamily: "var(--font-mono)", fontSize: "0.8rem" }}>
+        <p className="small-dim" style={{ color: "var(--amber)" }}>
           {pollError} — retrying…
         </p>
       )}
 
       {isTerminal && (
-        <div style={{ display: "flex", gap: "0.75rem", marginTop: "1.5rem" }}>
+        <div style={{ marginTop: 16, display: "flex", gap: 10 }}>
           {audit.status === "done" && (
-            <a href={`/api/audits/${auditId}/export`} className="btn-secondary" style={{ textDecoration: "none" }}>
-              Download Excel report
+            <a href={`/api/audits/${auditId}/export`} className="btn">
+              Download Excel report →
             </a>
           )}
-          <button onClick={onReset} className="btn-secondary">
+          <button onClick={onReset} className="btn secondary">
             Start another scan
           </button>
         </div>
