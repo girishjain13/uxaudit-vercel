@@ -24,6 +24,9 @@ export type RenderResult = {
   h1Text: string | null;
   canonical: string | null;
   wordCount: number;
+  lastModified: string | null;
+  htmlLang: string | null;
+  hreflangLinks: { locale: string; url: string }[];
   internalLinks: string[];
   externalLinks: string[];
   images: string[];
@@ -100,6 +103,9 @@ export async function renderPage(url: string, rootHost: string): Promise<RenderR
     h1Text: data.h1Text ?? null,
     canonical: data.canonical ?? null,
     wordCount: data.wordCount ?? 0,
+    lastModified: data.lastModified ?? null,
+    htmlLang: data.htmlLang ?? null,
+    hreflangLinks: data.hreflangLinks ?? [],
     internalLinks: data.internalLinks ?? [],
     externalLinks: data.externalLinks ?? [],
     images: data.images ?? [],
@@ -136,6 +142,9 @@ function errorResult(url: string, error: string, responseTimeMs: number): Render
     h1Text: null,
     canonical: null,
     wordCount: 0,
+    lastModified: null,
+    htmlLang: null,
+    hreflangLinks: [],
     internalLinks: [],
     externalLinks: [],
     images: [],
@@ -158,6 +167,7 @@ function buildInBrowserScript(url: string, rootHost: string): string {
       const rootHost = ${JSON.stringify(rootHost)};
       const response = await page.goto(context.url, { waitUntil: "networkidle2", timeout: 30000 });
       const statusCode = response ? response.status() : null;
+      const lastModified = response ? (response.headers()["last-modified"] ?? null) : null;
 
       const renderedDomHtml = await page.content();
 
@@ -180,6 +190,13 @@ function buildInBrowserScript(url: string, rootHost: string): string {
         const h1Text = document.querySelector("h1")?.textContent?.trim() || null;
         const canonical = document.querySelector('link[rel="canonical"]')?.getAttribute("href") || null;
         const wordCount = (document.body?.innerText || "").trim().split(/\\s+/).filter(Boolean).length;
+        const htmlLang = document.documentElement.getAttribute("lang") || null;
+        const hreflangLinks = [];
+        for (const link of document.querySelectorAll('link[rel="alternate"][hreflang]')) {
+          const locale = link.getAttribute("hreflang");
+          const href = link.getAttribute("href");
+          if (locale && href) hreflangLinks.push({ locale, url: abs(href) || href });
+        }
 
         const internalLinks = [];
         const externalLinks = [];
@@ -248,6 +265,8 @@ function buildInBrowserScript(url: string, rootHost: string): string {
           h1Text,
           canonical,
           wordCount,
+          htmlLang,
+          hreflangLinks,
           internalLinks,
           externalLinks,
           images,
@@ -303,6 +322,7 @@ function buildInBrowserScript(url: string, rootHost: string): string {
         data: {
           finalUrl: page.url(),
           statusCode,
+          lastModified,
           htmlSource: renderedDomHtml,
           renderedDomHtml,
           videos: [],

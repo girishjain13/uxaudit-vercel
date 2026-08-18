@@ -6,6 +6,12 @@ import { audits, findings, links, pages } from "@/lib/db/schema";
 import { urlToNetloc } from "@/lib/url";
 import { classifyIntegrations, countImagesAndMissingAlt, extractScripts, extractVisibleText, fleschReadingEase, hasSchemaOrg, pathDepth, textHash, topKeywords, topPhrases } from "@/lib/reportAnalysis";
 import { runTemplateAnalysis } from "@/lib/templates";
+import { extractLocaleSignals, runLocaleAnalysis } from "@/lib/locale";
+import { runMediaAnalysis } from "@/lib/media";
+import { runFreshnessAnalysis } from "@/lib/freshness";
+import { runUrlHealthAnalysis } from "@/lib/urlHealth";
+import { buildJourneyMap } from "@/lib/journey";
+import { assets } from "@/lib/db/schema";
 
 type Page = typeof pages.$inferSelect;
 type Finding = typeof findings.$inferSelect;
@@ -28,6 +34,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ audi
   const allPages = await db.select().from(pages).where(eq(pages.auditId, auditId));
   const allLinks = await db.select().from(links).where(eq(links.auditId, auditId));
   const allFindings = await db.select().from(findings).where(eq(findings.auditId, auditId));
+  const allAssets = await db.select().from(assets).innerJoin(pages, eq(assets.pageId, pages.id)).where(eq(pages.auditId, auditId));
 
   const rootHost = urlToNetloc(audit.startUrl);
 
@@ -133,12 +140,89 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ audi
   const integrationsSheet = XLSX.utils.json_to_sheet(integrationsSheetData);
 
   const heuristicRows = buildHeuristicEvaluation(allFindings);
+  const allCrawledUrls = new Set(allPages.map((p) => p.url));
+  const localeAnalysis = runLocaleAnalysis(
+    allPages.map((p) => {
+      const signals = p.renderedDomHtml ? extractLocaleSignals(p.renderedDomHtml) : { lang: null, hreflang: [] };
+      return { url: p.url, statusCode: p.statusCode, lang: signals.lang, hreflang: signals.hreflang };
+    }),
+    allCrawledUrls,
+  );
+  const mediaAnalysis = runMediaAnalysis(allAssets.map((row) => row.assets));
+  const freshnessAnalysis = runFreshnessAnalysis(allPages);
+  const urlHealthAnalysis = runUrlHealthAnalysis(allPages.map((p) => p.url));
+  const journeyMap = buildJourneyMap(allPages);
+
+  const localeSheet = XLSX.utils.aoa_to_sheet([
+    ["Multilingual site?", localeAnalysis.isMultilingual],
+    ["Pages without lang attribute", localeAnalysis.pagesWithoutLang],
+    ["Pages with hreflang", localeAnalysis.pagesWithHreflang],
+    ["Broken hreflang links", localeAnalysis.brokenHreflangCount],
+    [],
+    ["Locale", "Page count (via hreflang)"],
+    ...Object.entries(localeAnalysis.hreflangLocaleCounts),
+  ]);
+
+  const mediaSheet = XLSX.utils.aoa_to_sheet([
+    ["Total images", mediaAnalysis.totalImages],
+    ["Dominant image domain", mediaAnalysis.dominantImageDomain],
+    ["Images off dominant domain", `${mediaAnalysis.offDominantDomainImageCount} (${mediaAnalysis.offDominantDomainPct}%)`],
+    ["Video embeds", mediaAnalysis.videoEmbedCount],
+    ["Documents total", mediaAnalysis.documentTotal],
+    [],
+    ["Image domain", "Count"],
+    ...Object.entries(mediaAnalysis.imageDomains),
+    [],
+    ["Document type", "Count"],
+    ...Object.entries(mediaAnalysis.documentCountsByType),
+  ]);
+
+  const freshnessSheet = XLSX.utils.aoa_to_sheet([
+    ["Pages with known last-modified date", freshnessAnalysis.pagesWithKnownDate],
+    ["Pages with unknown date", `${freshnessAnalysis.pagesWithUnknownDate} (${freshnessAnalysis.unknownDatePct}%)`],
+    ["Stale > 1yr", `${freshnessAnalysis.staleOver1yrCount} (${freshnessAnalysis.staleOver1yrPct}%)`],
+    ["Stale > 3yr", `${freshnessAnalysis.staleOver3yrCount} (${freshnessAnalysis.staleOver3yrPct}%)`],
+    [],
+    ["Stalest pages", "Days since update"],
+    ...freshnessAnalysis.stalestPages.map((p) => [p.url, p.daysSinceUpdate]),
+  ]);
+
+  const urlHealthSheet = XLSX.utils.aoa_to_sheet([
+    ["Trailing-slash inconsistencies", urlHealthAnalysis.trailingSlashInconsistencies.length],
+    ["Case inconsistencies", urlHealthAnalysis.caseInconsistencies.length],
+    ["Param-bloated URLs (>3 params)", urlHealthAnalysis.paramBloatCount],
+    ["URLs with tracking params", urlHealthAnalysis.trackingParamCount],
+    [],
+    ["Note", "Redirect chain/loop tracking is not built — our Browserless-based renderer only sees the final response after Chromium follows redirects, not each hop."],
+    [],
+    ["Trailing-slash pairs"],
+    ...urlHealthAnalysis.trailingSlashInconsistencies.map((i) => [i.pages.join(" | ")]),
+    [],
+    ["Case-inconsistent pairs"],
+    ...urlHealthAnalysis.caseInconsistencies.map((i) => [i.pages.join(" | ")]),
+  ]);
+
+  const journeySheetData: Record<string, unknown>[] = [];
+  for (const j of journeyMap.journeys) {
+    for (const s of j.stages) {
+      journeySheetData.push({
+        Persona: j.name,
+        Stage: s.name,
+        Present: s.present,
+        "Page Count": s.pageCount,
+        "Example URL": s.exampleUrl,
+        "Click Depth": s.clickDepth,
+      });
+    }
+  }
+  const journeySheet = XLSX.utils.json_to_sheet(journeySheetData);
+
   const heuristicSheet = XLSX.utils.json_to_sheet(heuristicRows);
 
   const actionPlanRows = buildActionPlan(allFindings);
   const actionPlanSheet = XLSX.utils.json_to_sheet(actionPlanRows);
 
-  const overviewSheet = XLSX.utils.aoa_to_sheet([
+  const overviewRows: (string | number | boolean | null)[][] = [
     ["UX & IA Audit — Overview"],
     [],
     ["Client", audit.clientName],
@@ -147,7 +231,14 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ audi
     ["Findings", allFindings.length],
     ["Crawl started", audit.startedAt ? new Date(audit.startedAt).toISOString() : null],
     ["Crawl finished", audit.finishedAt ? new Date(audit.finishedAt).toISOString() : null],
-  ]);
+  ];
+  if (audit.clientStatedPageCount != null) {
+    overviewRows.push(["Client-stated page count", audit.clientStatedPageCount]);
+  }
+  if (audit.aiSummary) {
+    overviewRows.push([], ["AI-generated executive summary"], [audit.aiSummary]);
+  }
+  const overviewSheet = XLSX.utils.aoa_to_sheet(overviewRows);
 
   const findingsSheet = XLSX.utils.json_to_sheet(
     allFindings.map((f) => ({
@@ -219,6 +310,11 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ audi
   XLSX.utils.book_append_sheet(workbook, accessibilitySheet, "Accessibility");
   XLSX.utils.book_append_sheet(workbook, techAndRiskSheet, "Tech Stack & Risks");
   XLSX.utils.book_append_sheet(workbook, templatesSheet, "Templates");
+  XLSX.utils.book_append_sheet(workbook, journeySheet, "Journey Maps");
+  XLSX.utils.book_append_sheet(workbook, localeSheet, "Locale");
+  XLSX.utils.book_append_sheet(workbook, mediaSheet, "Media & Assets");
+  XLSX.utils.book_append_sheet(workbook, freshnessSheet, "Freshness");
+  XLSX.utils.book_append_sheet(workbook, urlHealthSheet, "URL Health");
   XLSX.utils.book_append_sheet(workbook, keywordsSheet, "Keywords");
   XLSX.utils.book_append_sheet(workbook, integrationsSheet, "Integrations");
   XLSX.utils.book_append_sheet(workbook, pageInventorySheet, "Page Inventory");

@@ -128,6 +128,9 @@ export function AuditStatusPanel({ auditId, onReset }: { auditId: string; onRese
               <a href={`/api/audits/${auditId}/export`} className="btn secondary">
                 Download Excel →
               </a>
+              <a href={`/api/audits/${auditId}/payload`} className="btn secondary">
+                Download JSON →
+              </a>
             </>
           )}
           <button onClick={onReset} className="btn secondary">

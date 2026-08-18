@@ -5,6 +5,17 @@ import { db } from "@/lib/db";
 import { audits, findings, links, pages } from "@/lib/db/schema";
 import { extractVisibleText, findNearDuplicateClusters, fleschReadingEase } from "@/lib/reportAnalysis";
 import { runTemplateAnalysis, structuralFingerprint } from "@/lib/templates";
+import { runUrlHealthAnalysis } from "@/lib/urlHealth";
+import { runFreshnessAnalysis } from "@/lib/freshness";
+import { extractLocaleSignals, runLocaleAnalysis } from "@/lib/locale";
+import { runMediaAnalysis } from "@/lib/media";
+import { extractComponentSignatures, runComponentAnalysis } from "@/lib/components";
+import { buildJourneyMap } from "@/lib/journey";
+import { runVarianceAnalysis } from "@/lib/variance";
+import { generateAiSummary } from "@/lib/aiInsights";
+import { buildScorecard } from "@/lib/scoring";
+import { countImagesAndMissingAlt } from "@/lib/reportAnalysis";
+import { assets } from "@/lib/db/schema";
 import {
   detectCms,
   detectJsFrameworks,
@@ -24,10 +35,13 @@ async function handler(req: NextRequest, { params }: { params: Promise<{ auditId
 
     const allPages = await db.select().from(pages).where(eq(pages.auditId, auditId));
     const allLinks = await db.select().from(links).where(eq(links.auditId, auditId));
+    const allAssets = await db.select().from(assets).innerJoin(pages, eq(assets.pageId, pages.id)).where(eq(pages.auditId, auditId));
 
     // Compute + persist each page's structural fingerprint before running
     // the rollup — pages.templateFingerprint existed in the schema from
     // the start but was never populated until now.
+    const componentHits = new Map<string, Set<string>>();
+    const localeByUrl = new Map<string, { lang: string | null; hreflang: { locale: string; url: string }[] }>();
     for (const p of allPages) {
       if (!p.renderedDomHtml) continue;
       const fingerprint = structuralFingerprint(p.renderedDomHtml);
@@ -35,7 +49,29 @@ async function handler(req: NextRequest, { params }: { params: Promise<{ auditId
         await db.update(pages).set({ templateFingerprint: fingerprint }).where(eq(pages.id, p.id));
         p.templateFingerprint = fingerprint; // keep the in-memory copy in sync for the findings below
       }
+      for (const sig of extractComponentSignatures(p.renderedDomHtml)) {
+        if (!componentHits.has(sig)) componentHits.set(sig, new Set());
+        componentHits.get(sig)!.add(p.url);
+      }
+      localeByUrl.set(p.url, extractLocaleSignals(p.renderedDomHtml));
     }
+
+    const allCrawledUrls = new Set(allPages.map((p) => p.url));
+    const componentAnalysis = runComponentAnalysis(componentHits, allPages.length);
+    const localeAnalysis = runLocaleAnalysis(
+      allPages.map((p) => ({
+        url: p.url,
+        statusCode: p.statusCode,
+        lang: localeByUrl.get(p.url)?.lang ?? null,
+        hreflang: localeByUrl.get(p.url)?.hreflang ?? [],
+      })),
+      allCrawledUrls,
+    );
+    const mediaAnalysis = runMediaAnalysis(allAssets.map((row) => row.assets));
+    const freshnessAnalysis = runFreshnessAnalysis(allPages);
+    const urlHealthAnalysis = runUrlHealthAnalysis(allPages.map((p) => p.url));
+    const varianceAnalysis = runVarianceAnalysis(audit.clientStatedPageCount, allPages.length, allPages.length >= audit.maxPages);
+    const journeyMap = buildJourneyMap(allPages);
 
     const newFindings = [
       ...findBrokenLinks(allPages),
@@ -49,6 +85,12 @@ async function handler(req: NextRequest, { params }: { params: Promise<{ auditId
       ...findNearDuplicateContent(allPages),
       ...findLowReadability(allPages),
       ...findTemplateRollup(allPages),
+      ...findComponentInconsistencies(componentAnalysis),
+      ...findLocaleIssues(localeAnalysis),
+      ...findMediaGovernance(mediaAnalysis),
+      ...findFreshnessIssues(freshnessAnalysis, allPages.length),
+      ...findUrlHealthIssues(urlHealthAnalysis),
+      ...findVarianceNote(varianceAnalysis),
       buildScaleSummary(allPages),
     ];
 
@@ -56,9 +98,55 @@ async function handler(req: NextRequest, { params }: { params: Promise<{ auditId
       await db.insert(findings).values(newFindings.map((f) => ({ ...f, auditId })));
     }
 
+    // Optional — only runs if ANTHROPIC_API_KEY is set. Generated once
+    // here and persisted, rather than re-generated (and re-billed) every
+    // time someone opens the report or downloads the Excel export.
+    let totalImages = 0;
+    let totalMissingAlt = 0;
+    for (const p of allPages) {
+      if (!p.renderedDomHtml) continue;
+      const { total, missing } = countImagesAndMissingAlt(p.renderedDomHtml);
+      totalImages += total;
+      totalMissingAlt += missing;
+    }
+    const imageAltCoveragePct = totalImages > 0 ? Math.round((1 - totalMissingAlt / totalImages) * 1000) / 10 : 100;
+    const orphanFinding = newFindings.find((f) => f.findingType === "orphan_page");
+    const scorecard = buildScorecard({
+      totalPages: allPages.length,
+      orphanPageCount: orphanFinding?.affectedPageCount ?? 0,
+      pagesOverThreeClicks: allPages.filter((p) => p.depth > 3).length,
+      thinContentCount: allPages.filter((p) => p.wordCount > 0 && p.wordCount < 150).length,
+      duplicateContentPageCount:
+        (newFindings.find((f) => f.findingType === "duplicate_title")?.affectedPageCount ?? 0) +
+        (newFindings.find((f) => f.findingType === "near_duplicate_content")?.affectedPageCount ?? 0),
+      missingH1Count: newFindings.find((f) => f.findingType === "missing_h1")?.affectedPageCount ?? 0,
+      imageAltCoveragePct,
+      pagesWithAccessibilityIssues: allPages.filter((p) => (p.accessibilityViolations ?? []).length > 0).length,
+      missingTitleCount: newFindings.find((f) => f.findingType === "missing_title")?.affectedPageCount ?? 0,
+      missingMetaDescriptionCount: newFindings.find((f) => f.findingType === "missing_meta_description")?.affectedPageCount ?? 0,
+      canonicalMissingCount: allPages.filter((p) => !p.canonical).length,
+    });
+
+    const aiSummary = await generateAiSummary({
+      startUrl: audit.startUrl,
+      pagesCrawled: allPages.length,
+      scorecard,
+      orphanPageCount: orphanFinding?.affectedPageCount ?? 0,
+      maxClickDepth: Math.max(0, ...allPages.map((p) => p.depth)),
+      thinContentCount: allPages.filter((p) => p.wordCount > 0 && p.wordCount < 150).length,
+      duplicateContentPageCount: newFindings.find((f) => f.findingType === "near_duplicate_content")?.affectedPageCount ?? 0,
+      pagesWithAccessibilityIssues: allPages.filter((p) => (p.accessibilityViolations ?? []).length > 0).length,
+      pagesAnalyzedForAccessibility: allPages.length,
+      topIntegrations: newFindings.filter((f) => f.findingType === "cms_detected" || f.findingType === "js_framework_detected").map((f) => f.title),
+      topActionItems: newFindings.slice(0, 6).map((f) => f.title),
+    }).catch((err) => {
+      console.error("[analyze] AI summary generation failed, continuing without it:", err);
+      return null;
+    });
+
     await db
       .update(audits)
-      .set({ status: "done", finishedAt: new Date() })
+      .set({ status: "done", finishedAt: new Date(), aiSummary })
       .where(eq(audits.id, auditId));
 
     return NextResponse.json({ ok: true, auditId, pageCount: allPages.length, findingCount: newFindings.length });
@@ -215,6 +303,189 @@ function findDuplicateTitles(allPages: Page[]): NewFinding[] {
       affectedUrlsSample: affected.slice(0, 10).map((p) => p.url),
       affectedTemplate: null,
       detectionMethod: "Exact string match on the title field across crawled pages",
+    },
+  ];
+}
+
+// --- UX Lead: Component style inconsistencies ---
+
+function findComponentInconsistencies(analysis: ReturnType<typeof runComponentAnalysis>): NewFinding[] {
+  return analysis.styleInconsistencies.map((inc) => ({
+    findingType: "component_style_inconsistency",
+    title: `${inc.distinctStyleCount} visually distinct <${inc.tag}> styles detected across ${inc.totalPagesCovered} page(s)`,
+    description: `Usually design-system drift rather than ${inc.distinctStyleCount} deliberate variants worth keeping.`,
+    severity: "medium",
+    effortBucket: "custom_dev",
+    personas: ["ux", "business"],
+    affectedPageCount: inc.totalPagesCovered,
+    affectedUrlsSample: [],
+    affectedTemplate: null,
+    detectionMethod: `Distinct tag+class signatures for <${inc.tag}> elements across the crawl: ${inc.signatures.join(", ")}`,
+  }));
+}
+
+// --- Content Strategist: locale/hreflang coverage ---
+
+function findLocaleIssues(analysis: ReturnType<typeof runLocaleAnalysis>): NewFinding[] {
+  const out: NewFinding[] = [];
+  if (analysis.brokenHreflangCount > 0) {
+    out.push({
+      findingType: "broken_hreflang",
+      title: `${analysis.brokenHreflangCount} hreflang alternate link(s) point to a URL never reached in this crawl`,
+      description: "Either a broken locale link, or a locale variant outside this crawl's scope (different subdomain/domain).",
+      severity: "medium",
+      effortBucket: "config",
+      personas: ["content", "business"],
+      affectedPageCount: analysis.brokenHreflangCount,
+      affectedUrlsSample: analysis.brokenHreflangExamples.slice(0, 10).map((e) => e.fromPage),
+      affectedTemplate: null,
+      detectionMethod: "hreflang target URL absent from the set of URLs actually crawled",
+    });
+  }
+  if (analysis.isMultilingual && analysis.pagesWithoutLang > 0) {
+    out.push({
+      findingType: "missing_lang_attribute",
+      title: `${analysis.pagesWithoutLang} page(s) have no lang attribute despite this site having multiple locales`,
+      description: "Screen readers and search engines can't tell what language these pages are in.",
+      severity: "medium",
+      effortBucket: "config",
+      personas: ["ux", "content"],
+      affectedPageCount: analysis.pagesWithoutLang,
+      affectedUrlsSample: [],
+      affectedTemplate: null,
+      detectionMethod: "document.documentElement lang attribute absent",
+    });
+  }
+  return out;
+}
+
+// --- Content Strategist: media/DAM governance ---
+
+function findMediaGovernance(analysis: ReturnType<typeof runMediaAnalysis>): NewFinding[] {
+  if (analysis.totalImages === 0 || analysis.offDominantDomainPct <= 15 || Object.keys(analysis.imageDomains).length <= 1) {
+    return [];
+  }
+  return [
+    {
+      findingType: "media_governance_risk",
+      title: `${analysis.offDominantDomainImageCount} image(s) (${analysis.offDominantDomainPct}%) hosted outside the site's main image domain`,
+      description:
+        `Main image domain appears to be ${analysis.dominantImageDomain ?? "unknown"}; the rest are spread across ` +
+        `${Object.keys(analysis.imageDomains).length - 1} other host(s) — worth confirming these are governed/backed-up ` +
+        "assets before a migration, not orphaned uploads.",
+      severity: "low",
+      effortBucket: "config",
+      personas: ["content", "business"],
+      affectedPageCount: analysis.offDominantDomainImageCount,
+      affectedUrlsSample: [],
+      affectedTemplate: null,
+      detectionMethod: "Image src hostname distribution across all crawled pages",
+    },
+  ];
+}
+
+// --- Content Strategist / Business Analyst: content freshness ---
+
+function findFreshnessIssues(analysis: ReturnType<typeof runFreshnessAnalysis>, totalPages: number): NewFinding[] {
+  const out: NewFinding[] = [];
+  if (totalPages > 0 && analysis.pagesWithUnknownDate / totalPages > 0.5) {
+    out.push({
+      findingType: "freshness_unknown",
+      title: `No reliable last-modified date for ${analysis.pagesWithUnknownDate} of ${totalPages} pages`,
+      description: "No Last-Modified HTTP header was returned — content-freshness reporting is only partial for this site.",
+      severity: "low",
+      effortBucket: "ootb",
+      personas: ["content", "business"],
+      affectedPageCount: analysis.pagesWithUnknownDate,
+      affectedUrlsSample: [],
+      affectedTemplate: null,
+      detectionMethod: "Last-Modified response header absent",
+    });
+  }
+  if (analysis.pagesWithKnownDate > 0 && analysis.staleOver3yrCount / analysis.pagesWithKnownDate > 0.2) {
+    out.push({
+      findingType: "stale_content",
+      title: `${analysis.staleOver3yrCount} page(s) haven't been touched in 3+ years`,
+      description: "Worth a content-governance review before migrating these as-is.",
+      severity: "low",
+      effortBucket: "config",
+      personas: ["content", "business"],
+      affectedPageCount: analysis.staleOver3yrCount,
+      affectedUrlsSample: analysis.stalestPages.slice(0, 10).map((p) => p.url),
+      affectedTemplate: null,
+      detectionMethod: "Last-Modified header more than 1095 days in the past",
+    });
+  }
+  return out;
+}
+
+// --- Business Analyst: URL structure health ---
+
+function findUrlHealthIssues(analysis: ReturnType<typeof runUrlHealthAnalysis>): NewFinding[] {
+  const out: NewFinding[] = [];
+  if (analysis.trailingSlashInconsistencies.length) {
+    out.push({
+      findingType: "url_trailing_slash_inconsistency",
+      title: `${analysis.trailingSlashInconsistencies.length} URL pair(s) exist in both trailing-slash and non-trailing-slash form`,
+      description: "Pick one and 301 the other, or duplicate-content dilution and a messier migration URL-map are the result.",
+      severity: "medium",
+      effortBucket: "config",
+      personas: ["business", "content"],
+      affectedPageCount: analysis.trailingSlashInconsistencies.reduce((sum, i) => sum + i.pages.length, 0),
+      affectedUrlsSample: analysis.trailingSlashInconsistencies[0]?.pages ?? [],
+      affectedTemplate: null,
+      detectionMethod: "Same path differing only by trailing slash across two crawled URLs",
+    });
+  }
+  if (analysis.caseInconsistencies.length) {
+    out.push({
+      findingType: "url_case_inconsistency",
+      title: `${analysis.caseInconsistencies.length} URL pair(s) exist in more than one letter-case form`,
+      description: "Most servers treat these as different pages even though they're meant to be the same one.",
+      severity: "medium",
+      effortBucket: "config",
+      personas: ["business", "content"],
+      affectedPageCount: analysis.caseInconsistencies.reduce((sum, i) => sum + i.pages.length, 0),
+      affectedUrlsSample: analysis.caseInconsistencies[0]?.pages ?? [],
+      affectedTemplate: null,
+      detectionMethod: "Same path differing only by letter case across two crawled URLs",
+    });
+  }
+  if (analysis.trackingParamCount > 0) {
+    out.push({
+      findingType: "url_tracking_params_internal",
+      title: `${analysis.trackingParamCount} internal link(s) carry tracking parameters baked into the href`,
+      description:
+        "utm_*, fbclid, etc. should only ever appear on inbound campaign links, never on internal navigation, or " +
+        "they fragment analytics and duplicate URLs for crawlers.",
+      severity: "low",
+      effortBucket: "config",
+      personas: ["business", "content"],
+      affectedPageCount: analysis.trackingParamCount,
+      affectedUrlsSample: analysis.trackingParamExamples.slice(0, 10).map((e) => e.url),
+      affectedTemplate: null,
+      detectionMethod: "Known tracking parameter names/prefixes found in the URL's query string",
+    });
+  }
+  return out;
+}
+
+// --- Business Analyst: client-stated vs crawled variance ---
+
+function findVarianceNote(variance: ReturnType<typeof runVarianceAnalysis>): NewFinding[] {
+  if (!variance) return [];
+  return [
+    {
+      findingType: "page_count_variance",
+      title: `Crawled ${variance.crawledPageCount} pages vs. client-stated ${variance.clientStatedPageCount} (${variance.differencePct > 0 ? "+" : ""}${variance.differencePct}%)`,
+      description: variance.note,
+      severity: Math.abs(variance.differencePct) > 10 ? "medium" : "low",
+      effortBucket: "ootb",
+      personas: ["business"],
+      affectedPageCount: variance.crawledPageCount,
+      affectedUrlsSample: [],
+      affectedTemplate: null,
+      detectionMethod: "audits.clientStatedPageCount compared against actual crawled page count",
     },
   ];
 }

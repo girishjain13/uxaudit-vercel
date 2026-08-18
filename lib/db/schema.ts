@@ -57,6 +57,7 @@ export const audits = pgTable("audits", {
   // kept only as a running total for progress display / completion
   // detection, not as the actual work queue.
   outstandingPageCount: integer("outstanding_page_count").notNull().default(0),
+  aiSummary: text("ai_summary"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   startedAt: timestamp("started_at", { withTimezone: true }),
   finishedAt: timestamp("finished_at", { withTimezone: true }),

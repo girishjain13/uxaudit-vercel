@@ -51,6 +51,7 @@ async function handler(req: NextRequest) {
         statusCode: result.statusCode,
         responseTimeMs: result.responseTimeMs,
         htmlSource: result.htmlSource,
+        lastModified: result.lastModified,
         renderedDomHtml: result.renderedDomHtml,
         isClientRendered: result.isClientRendered,
         title: result.title,
@@ -104,6 +105,22 @@ async function handler(req: NextRequest) {
     // PNGs under screenshots/{audit_id}/{page_id}_{breakpoint}.png on a
     // volume that survives container restarts; a serverless function has
     // no equivalent, so the durable copy is Blob and the DB row stores its URL.
+    if (!process.env.BLOB_READ_WRITE_TOKEN) {
+      // A generic "no token found" error gives no way to tell WHICH
+      // Vercel project actually ran this — and this codebase has been
+      // deployed under more than one project slug over the course of
+      // setup. Surfacing VERCEL_URL/VERCEL_PROJECT_PRODUCTION_URL here
+      // turns "it's still broken" into "here's the exact project that
+      // still needs Blob connected," rather than another round of
+      // re-checking the same (possibly wrong) project's settings.
+      throw new Error(
+        `BLOB_READ_WRITE_TOKEN is not set on this deployment. ` +
+          `VERCEL_PROJECT_PRODUCTION_URL=${process.env.VERCEL_PROJECT_PRODUCTION_URL ?? "unknown"} ` +
+          `VERCEL_URL=${process.env.VERCEL_URL ?? "unknown"} ` +
+          `VERCEL_ENV=${process.env.VERCEL_ENV ?? "unknown"}. ` +
+          `Go to Vercel → this exact project → Storage → connect/create a Blob store, then redeploy.`,
+      );
+    }
     for (const [bp, buf] of Object.entries(result.screenshots)) {
       if (!buf.length) continue;
       const blob = await put(`screenshots/${auditId}/${pageRow.id}_${bp}.png`, buf, {
