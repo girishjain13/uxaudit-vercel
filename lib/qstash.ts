@@ -33,7 +33,10 @@ export async function enqueuePageCrawl(params: {
     body: { auditId, url, depth },
     // Per-audit concurrency cap — tune down for slower/smaller client sites,
     // up (within your Browserless plan's limits) for large audits.
-    flowControl: { key: `audit:${auditId}`, parallelism: maxConcurrency },
+    // QStash restricts flowControlKey to alphanumeric/hyphen/underscore/
+    // period, so this uses a hyphen rather than the colon-separated key
+    // style used elsewhere (e.g. Redis's `audit:${id}:...` keys).
+    flowControl: { key: `audit-${auditId}`, parallelism: maxConcurrency },
     retries: 3,
   });
 }
