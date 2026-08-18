@@ -20,21 +20,35 @@ import { audits, findings, pages } from "@/lib/db/schema";
  */
 async function handler(req: NextRequest, { params }: { params: Promise<{ auditId: string }> }) {
   const { auditId } = await params;
-  const audit = await db.query.audits.findFirst({ where: eq(audits.id, auditId) });
-  if (!audit) return NextResponse.json({ error: "audit not found" }, { status: 404 });
 
-  const allPages = await db.select().from(pages).where(eq(pages.auditId, auditId));
+  try {
+    const audit = await db.query.audits.findFirst({ where: eq(audits.id, auditId) });
+    if (!audit) return NextResponse.json({ error: "audit not found" }, { status: 404 });
 
-  await runUxAnalysis(auditId, allPages);
-  await runContentAnalysis(auditId, allPages);
-  await runBusinessAnalysis(auditId, allPages);
+    const allPages = await db.select().from(pages).where(eq(pages.auditId, auditId));
 
-  await db
-    .update(audits)
-    .set({ status: "done", finishedAt: new Date() })
-    .where(eq(audits.id, auditId));
+    await runUxAnalysis(auditId, allPages);
+    await runContentAnalysis(auditId, allPages);
+    await runBusinessAnalysis(auditId, allPages);
 
-  return NextResponse.json({ ok: true, auditId, pageCount: allPages.length });
+    await db
+      .update(audits)
+      .set({ status: "done", finishedAt: new Date() })
+      .where(eq(audits.id, auditId));
+
+    return NextResponse.json({ ok: true, auditId, pageCount: allPages.length });
+  } catch (err) {
+    // Same reasoning as app/api/crawl/page/route.ts: without this, a
+    // thrown error here would leave the audit stuck at "analyzing"
+    // forever with no visible cause.
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(`[analyze] audit=${auditId}:`, err);
+    await db
+      .update(audits)
+      .set({ status: "failed", errorMessage: message, finishedAt: new Date() })
+      .where(eq(audits.id, auditId));
+    return NextResponse.json({ ok: false, error: message });
+  }
 }
 
 // --- UX Lead: orphan pages, click-depth, component/pattern inventory,

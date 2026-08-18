@@ -25,115 +25,157 @@ async function handler(req: NextRequest) {
     depth: number;
   };
 
-  const audit = await db.query.audits.findFirst({ where: eq(audits.id, auditId) });
-  if (!audit) {
-    return NextResponse.json({ error: "audit not found" }, { status: 404 });
-  }
+  try {
+    const audit = await db.query.audits.findFirst({ where: eq(audits.id, auditId) });
+    if (!audit) {
+      return NextResponse.json({ error: "audit not found" }, { status: 404 });
+    }
 
-  const rootHost = urlToNetloc(audit.startUrl);
+    const rootHost = urlToNetloc(audit.startUrl);
 
-  const robots = await loadRobots(auditId, audit.startUrl);
-  if (audit.respectRobots && !canFetch(robots, url)) {
-    await db.insert(pages).values({ auditId, url, depth, error: "blocked_by_robots_txt" });
-    await finishAndMaybeAnalyze(auditId);
-    return NextResponse.json({ ok: true, skipped: "robots" });
-  }
+    const robots = await loadRobots(auditId, audit.startUrl);
+    if (audit.respectRobots && !canFetch(robots, url)) {
+      await db.insert(pages).values({ auditId, url, depth, error: "blocked_by_robots_txt" });
+      await finishAndMaybeAnalyze(auditId);
+      return NextResponse.json({ ok: true, skipped: "robots" });
+    }
 
-  const result = await renderPage(url, rootHost);
+    const result = await renderPage(url, rootHost);
 
-  const [pageRow] = await db
-    .insert(pages)
-    .values({
-      auditId,
-      url: result.finalUrl,
-      depth,
-      statusCode: result.statusCode,
-      responseTimeMs: result.responseTimeMs,
-      htmlSource: result.htmlSource,
-      renderedDomHtml: result.renderedDomHtml,
-      isClientRendered: result.isClientRendered,
-      title: result.title,
-      metaDescription: result.metaDescription,
-      h1Text: result.h1Text,
-      canonical: result.canonical,
-      wordCount: result.wordCount,
-      lcpMs: result.lcpMs,
-      clsScore: result.clsScore,
-      inpMs: result.inpMs,
-      error: result.error,
-    })
-    .returning();
-
-  if (result.internalLinks.length || result.externalLinks.length) {
-    await db.insert(links).values([
-      ...result.internalLinks.map((target) => ({
+    const [pageRow] = await db
+      .insert(pages)
+      .values({
         auditId,
-        sourceUrl: result.finalUrl,
-        targetUrl: target,
-        isInternal: true,
-      })),
-      ...result.externalLinks.map((target) => ({
-        auditId,
-        sourceUrl: result.finalUrl,
-        targetUrl: target,
-        isInternal: false,
-      })),
-    ]);
-  }
+        url: result.finalUrl,
+        depth,
+        statusCode: result.statusCode,
+        responseTimeMs: result.responseTimeMs,
+        htmlSource: result.htmlSource,
+        renderedDomHtml: result.renderedDomHtml,
+        isClientRendered: result.isClientRendered,
+        title: result.title,
+        metaDescription: result.metaDescription,
+        h1Text: result.h1Text,
+        canonical: result.canonical,
+        wordCount: result.wordCount,
+        lcpMs: result.lcpMs,
+        clsScore: result.clsScore,
+        inpMs: result.inpMs,
+        error: result.error,
+      })
+      .returning();
 
-  const assetRows = [
-    ...result.images.map((u) => ({ pageId: pageRow.id, assetType: "image", url: u, domain: urlToNetloc(u) })),
-    ...result.videos.map((u) => ({ pageId: pageRow.id, assetType: "video", url: u, domain: urlToNetloc(u) })),
-    ...result.documents.map((u) => ({ pageId: pageRow.id, assetType: "document", url: u, domain: urlToNetloc(u) })),
-  ];
-  if (assetRows.length) await db.insert(assets).values(assetRows as any);
+    if (result.internalLinks.length || result.externalLinks.length) {
+      await db.insert(links).values([
+        ...result.internalLinks.map((target) => ({
+          auditId,
+          sourceUrl: result.finalUrl,
+          targetUrl: target,
+          isInternal: true,
+        })),
+        ...result.externalLinks.map((target) => ({
+          auditId,
+          sourceUrl: result.finalUrl,
+          targetUrl: target,
+          isInternal: false,
+        })),
+      ]);
+    }
 
-  if (result.interactions.length) {
-    await db.insert(interactions).values(
-      result.interactions.map((i) => ({
+    const assetRows = [
+      ...result.images.map((u) => ({ pageId: pageRow.id, assetType: "image", url: u, domain: urlToNetloc(u) })),
+      ...result.videos.map((u) => ({ pageId: pageRow.id, assetType: "video", url: u, domain: urlToNetloc(u) })),
+      ...result.documents.map((u) => ({ pageId: pageRow.id, assetType: "document", url: u, domain: urlToNetloc(u) })),
+    ];
+    if (assetRows.length) await db.insert(assets).values(assetRows as any);
+
+    if (result.interactions.length) {
+      await db.insert(interactions).values(
+        result.interactions.map((i) => ({
+          pageId: pageRow.id,
+          interactionType: i.type,
+          selectorSignature: i.selector,
+        })),
+      );
+    }
+
+    // Screenshots go to Vercel Blob, not local disk — the original wrote
+    // PNGs under screenshots/{audit_id}/{page_id}_{breakpoint}.png on a
+    // volume that survives container restarts; a serverless function has
+    // no equivalent, so the durable copy is Blob and the DB row stores its URL.
+    for (const [bp, buf] of Object.entries(result.screenshots)) {
+      if (!buf.length) continue;
+      const blob = await put(`screenshots/${auditId}/${pageRow.id}_${bp}.png`, buf, {
+        access: "public",
+        contentType: "image/png",
+      });
+      const flags = result.screenshotFlags[bp] ?? { hasHorizontalScroll: false, hasSmallTapTargets: false };
+      await db.insert(screenshots).values({
         pageId: pageRow.id,
-        interactionType: i.type,
-        selectorSignature: i.selector,
-      })),
-    );
-  }
+        breakpoint: bp,
+        viewportWidth: { mobile: 375, tablet: 768, desktop: 1440 }[bp as "mobile" | "tablet" | "desktop"],
+        blobUrl: blob.url,
+        hasHorizontalScroll: flags.hasHorizontalScroll,
+        hasOverlapSuspected: flags.hasSmallTapTargets,
+      });
+    }
 
-  // Screenshots go to Vercel Blob, not local disk — the original wrote
-  // PNGs under screenshots/{audit_id}/{page_id}_{breakpoint}.png on a
-  // volume that survives container restarts; a serverless function has
-  // no equivalent, so the durable copy is Blob and the DB row stores its URL.
-  for (const [bp, buf] of Object.entries(result.screenshots)) {
-    if (!buf.length) continue;
-    const blob = await put(`screenshots/${auditId}/${pageRow.id}_${bp}.png`, buf, {
-      access: "public",
-      contentType: "image/png",
-    });
-    const flags = result.screenshotFlags[bp] ?? { hasHorizontalScroll: false, hasSmallTapTargets: false };
-    await db.insert(screenshots).values({
-      pageId: pageRow.id,
-      breakpoint: bp,
-      viewportWidth: { mobile: 375, tablet: 768, desktop: 1440 }[bp as "mobile" | "tablet" | "desktop"],
-      blobUrl: blob.url,
-      hasHorizontalScroll: flags.hasHorizontalScroll,
-      hasOverlapSuspected: flags.hasSmallTapTargets,
-    });
-  }
-
-  // Discover further pages — same depth/max_pages guard as the original,
-  // just with Redis SETNX instead of an in-memory list for dedup, since
-  // multiple invocations can race on the same discovered link.
-  if (depth < audit.maxDepth) {
-    for (const link of result.internalLinks) {
-      const isNew = await markSeenIfNew(auditId, link);
-      if (isNew) {
-        await incrOutstanding(auditId, 1);
-        await enqueuePageCrawl({ auditId, url: link, depth: depth + 1 });
+    // Discover further pages — same depth/max_pages guard as the original,
+    // just with Redis SETNX instead of an in-memory list for dedup, since
+    // multiple invocations can race on the same discovered link.
+    if (depth < audit.maxDepth) {
+      for (const link of result.internalLinks) {
+        const isNew = await markSeenIfNew(auditId, link);
+        if (isNew) {
+          await incrOutstanding(auditId, 1);
+          await enqueuePageCrawl({ auditId, url: link, depth: depth + 1 });
+        }
       }
     }
-  }
 
-  await finishAndMaybeAnalyze(auditId);
-  return NextResponse.json({ ok: true, pageId: pageRow.id });
+    await finishAndMaybeAnalyze(auditId);
+    return NextResponse.json({ ok: true, pageId: pageRow.id });
+  } catch (err) {
+    // Without this, a thrown error (e.g. Browserless unreachable/misconfigured,
+    // a bad response, a DB write failure) would abort the function before
+    // finishAndMaybeAnalyze ever ran — leaving the audit's outstanding
+    // counter permanently non-zero and its status stuck at "crawling"
+    // forever, with no page ever recorded and no visible error. Every
+    // failure now gets logged, recorded on the page/audit rows, and still
+    // decrements the counter so the audit can reach a terminal state.
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(`[crawl/page] audit=${auditId} url=${url} depth=${depth}:`, err);
+
+    try {
+      await db.insert(pages).values({ auditId, url, depth, error: message });
+    } catch {
+      // best-effort — don't let a failed error-log write mask the real error
+    }
+
+    if (depth === 0) {
+      // The seed page itself failed: nothing else will ever get enqueued
+      // for this audit, so end it now as a clear failure rather than
+      // leaving it stuck, or letting it silently reach "done" with zero
+      // pages once the counter hits zero.
+      await db
+        .update(audits)
+        .set({ status: "failed", errorMessage: message, finishedAt: new Date() })
+        .where(eq(audits.id, auditId));
+    } else {
+      const isDone = await decrOutstandingAndCheckDone(auditId);
+      await db.update(audits).set({ errorMessage: message }).where(eq(audits.id, auditId));
+      if (isDone) {
+        await db.update(audits).set({ status: "analyzing" }).where(eq(audits.id, auditId));
+        await enqueueAnalysis(auditId);
+      }
+    }
+
+    // Returns 200 deliberately: the failure is already recorded and the
+    // counter already adjusted, so letting QStash retry this same message
+    // would double-decrement the counter and could flip the audit to
+    // "done"/"analyzing" prematurely.
+    return NextResponse.json({ ok: false, error: message });
+  }
 }
 
 async function finishAndMaybeAnalyze(auditId: string) {
