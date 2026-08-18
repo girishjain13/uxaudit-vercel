@@ -1,6 +1,15 @@
 import { Client } from "@upstash/qstash";
 
-export const qstash = new Client({ token: process.env.QSTASH_TOKEN! });
+// baseUrl matters here: Upstash's QStash now spans multiple regions (EU and
+// US), and a token issued for one region isn't necessarily recognized by
+// the other region's default routing. QSTASH_URL — shown in Upstash's own
+// dashboard .env snippet alongside the token — points the client at the
+// correct regional endpoint explicitly, rather than relying on whatever
+// Upstash's global default resolves to.
+export const qstash = new Client({
+  token: process.env.QSTASH_TOKEN!,
+  baseUrl: process.env.QSTASH_URL,
+});
 
 /**
  * Publish one "crawl this page" job. This is the direct replacement for
