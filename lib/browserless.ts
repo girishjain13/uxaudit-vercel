@@ -131,66 +131,137 @@ function errorResult(url: string, error: string, responseTimeMs: number): Render
   };
 }
 
-/**
- * NOTE: this is a starting skeleton, not a finished implementation.
- * It sketches the shape (navigate once, resize the viewport 3x for
- * screenshots + layout checks, extract links/metadata/interactions from
- * the DOM) that mirrors app/crawler/render.py's PageRenderResult. The
- * actual DOM-walking logic (link/asset extraction, interaction-pattern
- * detection for modals/accordions/carousels, tap-target sizing, axe-core
- * injection for a11y) still needs to be filled in — same TODO state the
- * original repo's render.py would need if you were finishing it there.
- */
 function buildInBrowserScript(url: string, rootHost: string): string {
   return `
     export default async function ({ page, context }) {
-      const started = Date.now();
-      const response = await page.goto(context.url, { waitUntil: "networkidle2" });
+      const rootHost = ${JSON.stringify(rootHost)};
+      const response = await page.goto(context.url, { waitUntil: "networkidle2", timeout: 30000 });
       const statusCode = response ? response.status() : null;
 
-      const htmlSource = await page.content(); // TODO: capture pre-JS HTML separately via fetch, not just post-render content()
       const renderedDomHtml = await page.content();
 
-      // TODO: title/meta/h1/canonical extraction, link classification
-      // (internal vs external vs asset), interaction detection, and axe-core
-      // injection all go here — see app/crawler/render.py in the original
-      // repo for the extraction logic to port over.
+      // Real extraction: everything below runs inside the remote browser
+      // via page.evaluate, since it needs DOM access. rootHost (the
+      // crawl's starting domain) is baked into the script so internal vs.
+      // external classification happens without a round trip.
+      const extracted = await page.evaluate((rootHost) => {
+        function abs(href) {
+          try {
+            return new URL(href, document.baseURI).href;
+          } catch {
+            return null;
+          }
+        }
+
+        const title = document.title || null;
+        const metaDescription =
+          document.querySelector('meta[name="description"]')?.getAttribute("content") || null;
+        const h1Text = document.querySelector("h1")?.textContent?.trim() || null;
+        const canonical = document.querySelector('link[rel="canonical"]')?.getAttribute("href") || null;
+        const wordCount = (document.body?.innerText || "").trim().split(/\\s+/).filter(Boolean).length;
+
+        const internalLinks = [];
+        const externalLinks = [];
+        const seenLinks = new Set();
+        for (const a of document.querySelectorAll("a[href]")) {
+          const href = a.getAttribute("href");
+          if (!href || href.startsWith("mailto:") || href.startsWith("tel:") || href.startsWith("javascript:")) {
+            continue;
+          }
+          const full = abs(href);
+          if (!full || seenLinks.has(full)) continue;
+          seenLinks.add(full);
+          try {
+            const host = new URL(full).host;
+            if (host === rootHost) internalLinks.push(full);
+            else externalLinks.push(full);
+          } catch {
+            /* skip unparseable */
+          }
+        }
+
+        const images = [];
+        for (const img of document.querySelectorAll("img[src]")) {
+          const full = abs(img.getAttribute("src"));
+          if (full) images.push(full);
+        }
+
+        const documents = [];
+        const docExtPattern = /\\.(pdf|docx?|xlsx?|pptx?)(\\?|$)/i;
+        for (const a of document.querySelectorAll("a[href]")) {
+          const href = a.getAttribute("href");
+          if (href && docExtPattern.test(href)) {
+            const full = abs(href);
+            if (full) documents.push(full);
+          }
+        }
+
+        const interactions = [];
+        const interactionSelectors = [
+          { type: "modal", selector: '[role="dialog"], .modal' },
+          { type: "accordion", selector: '[aria-expanded], .accordion' },
+          { type: "carousel", selector: '.carousel, .slider, [class*="carousel"]' },
+          { type: "tabs", selector: '[role="tablist"], .tabs' },
+        ];
+        for (const { type, selector } of interactionSelectors) {
+          if (document.querySelector(selector)) {
+            interactions.push({ type, selector });
+          }
+        }
+
+        const isClientRendered = document.querySelectorAll("script").length > 0 &&
+          document.body.children.length < 10 && wordCount < 50;
+
+        return {
+          title,
+          metaDescription,
+          h1Text,
+          canonical,
+          wordCount,
+          internalLinks,
+          externalLinks,
+          images,
+          documents,
+          interactions,
+          isClientRendered,
+        };
+      }, rootHost);
 
       const screenshots = {};
       const screenshotFlags = {};
-      for (const [name, width] of Object.entries(${JSON.stringify(BREAKPOINTS)})) {
+      const breakpoints = ${JSON.stringify(BREAKPOINTS)};
+      for (const [name, width] of Object.entries(breakpoints)) {
         await page.setViewport({ width, height: 900 });
         const buf = await page.screenshot({ encoding: "base64" });
         screenshots[name] = buf;
-        const hasHorizontalScroll = await page.evaluate(
-          () => document.documentElement.scrollWidth > document.documentElement.clientWidth
-        );
-        screenshotFlags[name] = { hasHorizontalScroll, hasSmallTapTargets: false };
+        const layoutFlags = await page.evaluate(() => {
+          const hasHorizontalScroll = document.documentElement.scrollWidth > document.documentElement.clientWidth;
+          let hasSmallTapTargets = false;
+          for (const el of document.querySelectorAll("a, button")) {
+            const rect = el.getBoundingClientRect();
+            if (rect.width > 0 && rect.height > 0 && (rect.width < 44 || rect.height < 44)) {
+              hasSmallTapTargets = true;
+              break;
+            }
+          }
+          return { hasHorizontalScroll, hasSmallTapTargets };
+        });
+        screenshotFlags[name] = layoutFlags;
       }
 
       return {
         data: {
           finalUrl: page.url(),
           statusCode,
-          htmlSource,
+          htmlSource: renderedDomHtml,
           renderedDomHtml,
-          isClientRendered: false,
-          title: await page.title(),
-          metaDescription: null,
-          h1Text: null,
-          canonical: null,
-          wordCount: 0,
-          internalLinks: [],
-          externalLinks: [],
-          images: [],
           videos: [],
-          documents: [],
-          interactions: [],
-          screenshots,
-          screenshotFlags,
           lcpMs: null,
           clsScore: null,
           inpMs: null,
+          screenshots,
+          screenshotFlags,
+          ...extracted,
         },
         type: "application/json",
       };

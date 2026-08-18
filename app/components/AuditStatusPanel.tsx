@@ -128,9 +128,16 @@ export function AuditStatusPanel({ auditId, onReset }: { auditId: string; onRese
       )}
 
       {isTerminal && (
-        <button onClick={onReset} className="btn-secondary" style={{ marginTop: "1.5rem" }}>
-          Start another scan
-        </button>
+        <div style={{ display: "flex", gap: "0.75rem", marginTop: "1.5rem" }}>
+          {audit.status === "done" && (
+            <a href={`/api/audits/${auditId}/export`} className="btn-secondary" style={{ textDecoration: "none" }}>
+              Download Excel report
+            </a>
+          )}
+          <button onClick={onReset} className="btn-secondary">
+            Start another scan
+          </button>
+        </div>
       )}
     </div>
   );
