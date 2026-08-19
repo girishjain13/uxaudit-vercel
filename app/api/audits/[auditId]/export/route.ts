@@ -1,11 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
-import { eq } from "drizzle-orm";
+import { eq, inArray } from "drizzle-orm";
 import * as XLSX from "xlsx";
 import { db } from "@/lib/db";
 import { audits, findings, links, pages } from "@/lib/db/schema";
 import { urlToNetloc } from "@/lib/url";
 import { classifyIntegrations, countImagesAndMissingAlt, extractScripts, extractVisibleText, fleschReadingEase, hasSchemaOrg, pathDepth, textHash, topKeywords, topPhrases } from "@/lib/reportAnalysis";
 import { runTemplateAnalysis } from "@/lib/templates";
+import { fetchAllPagesForAnalysis } from "@/lib/db/pagesBatch";
 import { extractLocaleSignals, runLocaleAnalysis } from "@/lib/locale";
 import { runMediaAnalysis } from "@/lib/media";
 import { runFreshnessAnalysis } from "@/lib/freshness";
@@ -13,7 +14,7 @@ import { runUrlHealthAnalysis } from "@/lib/urlHealth";
 import { buildJourneyMap } from "@/lib/journey";
 import { assets } from "@/lib/db/schema";
 
-type Page = typeof pages.$inferSelect;
+type Page = import("@/lib/db/pagesBatch").PageForAnalysis;
 type Finding = typeof findings.$inferSelect;
 
 /**
@@ -31,10 +32,15 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ audi
     return NextResponse.json({ error: "audit not found" }, { status: 404 });
   }
 
-  const allPages = await db.select().from(pages).where(eq(pages.auditId, auditId));
+  const allPages = await fetchAllPagesForAnalysis(auditId);
   const allLinks = await db.select().from(links).where(eq(links.auditId, auditId));
   const allFindings = await db.select().from(findings).where(eq(findings.auditId, auditId));
-  const allAssets = await db.select().from(assets).innerJoin(pages, eq(assets.pageId, pages.id)).where(eq(pages.auditId, auditId));
+  // See app/api/analyze/[auditId]/route.ts for why this isn't a join —
+  // the join duplicated the full pages row (both giant HTML columns)
+  // once per asset, which is what actually blew past Neon's 64MB
+  // per-response cap on this exact query.
+  const pageIds = allPages.map((p) => p.id);
+  const allAssets = pageIds.length ? await db.select().from(assets).where(inArray(assets.pageId, pageIds)) : [];
 
   const rootHost = urlToNetloc(audit.startUrl);
 
@@ -148,7 +154,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ audi
     }),
     allCrawledUrls,
   );
-  const mediaAnalysis = runMediaAnalysis(allAssets.map((row) => row.assets));
+  const mediaAnalysis = runMediaAnalysis(allAssets);
   const freshnessAnalysis = runFreshnessAnalysis(allPages);
   const urlHealthAnalysis = runUrlHealthAnalysis(allPages.map((p) => p.url));
   const journeyMap = buildJourneyMap(allPages);

@@ -4,6 +4,7 @@ import { db } from "@/lib/db";
 import { audits, findings, links, pages } from "@/lib/db/schema";
 import { countImagesAndMissingAlt } from "@/lib/reportAnalysis";
 import { buildScorecard } from "@/lib/scoring";
+import { fetchAllPagesForAnalysis } from "@/lib/db/pagesBatch";
 
 export const dynamic = "force-dynamic";
 
@@ -37,7 +38,7 @@ export default async function ReportPage({ params }: { params: Promise<{ auditId
   const audit = await db.query.audits.findFirst({ where: eq(audits.id, auditId) });
   if (!audit) notFound();
 
-  const allPages = await db.select().from(pages).where(eq(pages.auditId, auditId));
+  const allPages = await fetchAllPagesForAnalysis(auditId);
   const allFindings = await db.select().from(findings).where(eq(findings.auditId, auditId));
   const allLinks = await db.select().from(links).where(eq(links.auditId, auditId));
 

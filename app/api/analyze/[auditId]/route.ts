@@ -1,9 +1,10 @@
 import { verifySignatureAppRouter } from "@upstash/qstash/nextjs";
 import { NextRequest, NextResponse } from "next/server";
-import { eq } from "drizzle-orm";
+import { and, asc, eq, gt, inArray } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { audits, findings, links, pages } from "@/lib/db/schema";
 import { extractVisibleText, findNearDuplicateClusters, fleschReadingEase } from "@/lib/reportAnalysis";
+import { fetchAllPagesForAnalysis } from "@/lib/db/pagesBatch";
 import { runTemplateAnalysis, structuralFingerprint } from "@/lib/templates";
 import { runUrlHealthAnalysis } from "@/lib/urlHealth";
 import { runFreshnessAnalysis } from "@/lib/freshness";
@@ -24,7 +25,7 @@ import {
   looksLikeExposedStaging,
 } from "@/lib/techFingerprint";
 
-type Page = typeof pages.$inferSelect;
+type Page = import("@/lib/db/pagesBatch").PageForAnalysis;
 
 async function handler(req: NextRequest, { params }: { params: Promise<{ auditId: string }> }) {
   const { auditId } = await params;
@@ -33,9 +34,17 @@ async function handler(req: NextRequest, { params }: { params: Promise<{ auditId
     const audit = await db.query.audits.findFirst({ where: eq(audits.id, auditId) });
     if (!audit) return NextResponse.json({ error: "audit not found" }, { status: 404 });
 
-    const allPages = await db.select().from(pages).where(eq(pages.auditId, auditId));
+    const allPages = await fetchAllPagesForAnalysis(auditId);
     const allLinks = await db.select().from(links).where(eq(links.auditId, auditId));
-    const allAssets = await db.select().from(assets).innerJoin(pages, eq(assets.pageId, pages.id)).where(eq(pages.auditId, auditId));
+    // Was: db.select().from(assets).innerJoin(pages, ...) — that join
+    // duplicated the ENTIRE pages row (both giant HTML columns) once per
+    // asset, multiplying the exact same 64MB-response problem by however
+    // many images/videos/documents the audit found. We only ever read
+    // `row.assets` from that join result, never any page fields, so a
+    // plain filter against page IDs already in hand is both correct and
+    // safe regardless of audit size.
+    const pageIds = allPages.map((p) => p.id);
+    const allAssets = pageIds.length ? await db.select().from(assets).where(inArray(assets.pageId, pageIds)) : [];
 
     // Compute + persist each page's structural fingerprint before running
     // the rollup — pages.templateFingerprint existed in the schema from
@@ -67,7 +76,7 @@ async function handler(req: NextRequest, { params }: { params: Promise<{ auditId
       })),
       allCrawledUrls,
     );
-    const mediaAnalysis = runMediaAnalysis(allAssets.map((row) => row.assets));
+    const mediaAnalysis = runMediaAnalysis(allAssets);
     const freshnessAnalysis = runFreshnessAnalysis(allPages);
     const urlHealthAnalysis = runUrlHealthAnalysis(allPages.map((p) => p.url));
     const varianceAnalysis = runVarianceAnalysis(audit.clientStatedPageCount, allPages.length, allPages.length >= audit.maxPages);
