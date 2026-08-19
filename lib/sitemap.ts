@@ -14,6 +14,8 @@
  * into pulling in unrelated domains or an unbounded number of URLs.
  */
 
+import { isLikelyNonHtmlResource } from "./urlFilters";
+
 const MAX_SITEMAPS_TO_FETCH = 10;
 const MAX_URLS_RETURNED = 2000;
 const FETCH_TIMEOUT_MS = 8000;
@@ -85,7 +87,7 @@ export async function discoverSitemapUrls(startUrl: string): Promise<string[]> {
         sitemapsFetched++;
         for (const loc of extractLocs(nestedXml)) {
           try {
-            if (new URL(loc).host === rootHost) discovered.add(loc);
+            if (new URL(loc).host === rootHost && !isLikelyNonHtmlResource(loc)) discovered.add(loc);
           } catch {
             /* skip unparseable entries */
           }
@@ -95,7 +97,7 @@ export async function discoverSitemapUrls(startUrl: string): Promise<string[]> {
     } else {
       for (const loc of extractLocs(xml)) {
         try {
-          if (new URL(loc).host === rootHost) discovered.add(loc);
+          if (new URL(loc).host === rootHost && !isLikelyNonHtmlResource(loc)) discovered.add(loc);
         } catch {
           /* skip unparseable entries */
         }

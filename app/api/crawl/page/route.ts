@@ -3,6 +3,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { put } from "@vercel/blob";
 import { eq } from "drizzle-orm";
 import { urlToNetloc } from "@/lib/url";
+import { isLikelyNonHtmlResource } from "@/lib/urlFilters";
 import { db } from "@/lib/db";
 import { assets, audits, interactions, links, pages, screenshots } from "@/lib/db/schema";
 import { renderPage } from "@/lib/browserless";
@@ -148,6 +149,13 @@ async function handler(req: NextRequest) {
     if (depth < audit.maxDepth) {
       const newlyDiscovered: string[] = [];
       for (const link of result.internalLinks) {
+        // Defense in depth: lib/browserless.ts's extraction script
+        // already excludes PDFs/images/etc from internalLinks, but this
+        // catches anything that slips through (an edge case in the
+        // in-page regex, a stale function during a rolling deploy) —
+        // this is what previously let hundreds of PDF URLs get queued
+        // as "pages" and fail to render on a real crawl.
+        if (isLikelyNonHtmlResource(link)) continue;
         if (await markSeenIfNew(auditId, link)) newlyDiscovered.push(link);
       }
       if (newlyDiscovered.length > 0) {

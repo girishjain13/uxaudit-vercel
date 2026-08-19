@@ -209,6 +209,13 @@ function buildInBrowserScript(url: string, rootHost: string): string {
           const full = abs(href);
           if (!full || seenLinks.has(full)) continue;
           seenLinks.add(full);
+          // A PDF/doc/image/etc has no <title>, no DOM structure this
+          // extraction script expects — queuing it as a "page" to render
+          // either fails outright or produces meaningless empty-HTML
+          // findings. These belong in the documents/assets list below,
+          // never in internalLinks (which drives what gets crawled next).
+          const nonHtmlPattern = /\\.(pdf|docx?|xlsx?|pptx?|csv|rtf|zip|rar|7z|tar|gz|jpe?g|png|gif|svg|webp|ico|bmp|tiff?|mp4|mp3|wav|avi|mov|webm|ogg|woff2?|ttf|eot|xml|json)(\\?|#|$)/i;
+          if (nonHtmlPattern.test(full)) continue;
           try {
             const host = new URL(full).host;
             // Exact host equality was the actual bug behind "crawl only

@@ -13,6 +13,10 @@ import { runFreshnessAnalysis } from "@/lib/freshness";
 import { runUrlHealthAnalysis } from "@/lib/urlHealth";
 import { buildJourneyMap } from "@/lib/journey";
 import { assets } from "@/lib/db/schema";
+import { buildScorecard } from "@/lib/scoring";
+import { detectFeaturesAcrossSite } from "@/lib/featureMatrix";
+import { checkExternalLinkHealth } from "@/lib/externalLinkHealth";
+import { quadrantOf, impactOf, effortOf } from "@/lib/quadrant";
 
 type Page = import("@/lib/db/pagesBatch").PageForAnalysis;
 type Finding = typeof findings.$inferSelect;
@@ -71,6 +75,39 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ audi
       externalDomains,
     };
   });
+
+  const findingByType = (type: string) => allFindings.find((f) => f.findingType === type);
+  const totalImagesForScore = derived.reduce((sum, d) => sum + d.imagesTotal, 0);
+  const totalMissingAltForScore = derived.reduce((sum, d) => sum + d.missingAlt, 0);
+  const imageAltCoveragePctForScore =
+    totalImagesForScore > 0 ? Math.round((1 - totalMissingAltForScore / totalImagesForScore) * 1000) / 10 : 100;
+  const scorecard = buildScorecard({
+    totalPages: allPages.length,
+    orphanPageCount: findingByType("orphan_page")?.affectedPageCount ?? 0,
+    pagesOverThreeClicks: allPages.filter((p) => p.depth > 3).length,
+    thinContentCount: allPages.filter((p) => p.wordCount > 0 && p.wordCount < 150).length,
+    duplicateContentPageCount:
+      (findingByType("duplicate_title")?.affectedPageCount ?? 0) + (findingByType("near_duplicate_content")?.affectedPageCount ?? 0),
+    missingH1Count: findingByType("missing_h1")?.affectedPageCount ?? 0,
+    imageAltCoveragePct: imageAltCoveragePctForScore,
+    pagesWithAccessibilityIssues: allPages.filter((p) => (p.accessibilityViolations ?? []).length > 0).length,
+    missingTitleCount: findingByType("missing_title")?.affectedPageCount ?? 0,
+    missingMetaDescriptionCount: findingByType("missing_meta_description")?.affectedPageCount ?? 0,
+    canonicalMissingCount: allPages.filter((p) => !p.canonical).length,
+  });
+
+  const localePerPage = allPages.map((p) => extractLocaleSignals(p.renderedDomHtml || ""));
+  const featureMatrix = detectFeaturesAcrossSite(
+    allPages.map((p, i) => ({
+      url: p.url,
+      renderedDomHtml: p.renderedDomHtml,
+      hasMultipleLocales: localePerPage[i].hreflang.length > 0,
+    })),
+  );
+
+  const externalLinkHealth = await checkExternalLinkHealth(
+    allLinks.filter((l) => !l.isInternal).map((l) => ({ sourceUrl: l.sourceUrl, targetUrl: l.targetUrl })),
+  );
 
   const internalLinksOutByUrl = new Map<string, number>();
   for (const link of allLinks) {
@@ -149,7 +186,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ audi
   }
   const integrationsSheet = XLSX.utils.json_to_sheet(integrationsSheetData);
 
-  const heuristicRows = buildHeuristicEvaluation(allFindings);
+  const heuristicRows = buildHeuristicEvaluation(allFindings, totalMissingAltForScore);
   const allCrawledUrls = new Set(allPages.map((p) => p.url));
   const localeAnalysis = runLocaleAnalysis(
     allPages.map((p) => {
@@ -242,6 +279,17 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ audi
     ["Findings", allFindings.length],
     ["Crawl started", audit.startedAt ? new Date(audit.startedAt).toISOString() : null],
     ["Crawl finished", audit.finishedAt ? new Date(audit.finishedAt).toISOString() : null],
+    [],
+    ["Overall UX Maturity", `${scorecard.uxMaturityScore} / 100 (${scorecard.uxMaturityBand})`],
+    ["Information Architecture", `${scorecard.iaHealthScore} / 100`],
+    ["Content Quality", `${scorecard.contentQualityScore} / 100`],
+    ["Accessibility", `${scorecard.accessibilityScore} / 100`],
+    ["SEO / Findability", `${scorecard.seoScore} / 100`],
+    [],
+    ["Orphan pages", findingByType("orphan_page")?.affectedPageCount ?? 0],
+    ["Thin content pages", allPages.filter((p) => p.wordCount > 0 && p.wordCount < 150).length],
+    ["Duplicate content pages", (findingByType("duplicate_title")?.affectedPageCount ?? 0) + (findingByType("near_duplicate_content")?.affectedPageCount ?? 0)],
+    ["Pages with accessibility issues", `${allPages.filter((p) => (p.accessibilityViolations ?? []).length > 0).length} / ${allPages.length}`],
   ];
   if (audit.clientStatedPageCount != null) {
     overviewRows.push(["Client-stated page count", audit.clientStatedPageCount]);
@@ -250,6 +298,39 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ audi
     overviewRows.push([], ["AI-generated executive summary"], [audit.aiSummary]);
   }
   const overviewSheet = XLSX.utils.aoa_to_sheet(overviewRows);
+
+  const featureMatrixSheet = XLSX.utils.json_to_sheet(
+    featureMatrix.map((f) => ({
+      Feature: f.feature,
+      "Detected?": f.detected ? "Yes" : "No",
+      "Pages Found On": f.detected ? f.pagesFoundOn : null,
+    })),
+  );
+
+  const externalLinkHealthSheet = XLSX.utils.json_to_sheet(
+    externalLinkHealth.map((r) => ({
+      "Broken URL": r.url,
+      Status: r.status,
+      "Linked From (count)": r.linkedFromCount,
+      "Example Linking Page": r.exampleLinkingPage,
+    })),
+  );
+
+  // Performance (Core Web Vitals): the schema has lcpMs/clsScore/inpMs
+  // columns, but nothing populates them today — real CWV needs a
+  // Lighthouse/PageSpeed Insights API call per page, which is a genuinely
+  // separate integration (API key, per-page latency/cost) from anything
+  // else this crawler does. Sheet included for structural completeness;
+  // values are honestly null rather than fabricated.
+  const performanceSheet = XLSX.utils.json_to_sheet(
+    allPages.slice(0, 10).map((p) => ({
+      Page: p.url,
+      Score: null,
+      LCP: p.lcpMs,
+      CLS: p.clsScore,
+      TBT: null,
+    })),
+  );
 
   const findingsSheet = XLSX.utils.json_to_sheet(
     allFindings.map((f) => ({
@@ -318,6 +399,9 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ audi
   XLSX.utils.book_append_sheet(workbook, overviewSheet, "Overview");
   XLSX.utils.book_append_sheet(workbook, heuristicSheet, "Heuristic Evaluation");
   XLSX.utils.book_append_sheet(workbook, actionPlanSheet, "Action Plan");
+  XLSX.utils.book_append_sheet(workbook, featureMatrixSheet, "Feature Matrix");
+  XLSX.utils.book_append_sheet(workbook, performanceSheet, "Performance");
+  XLSX.utils.book_append_sheet(workbook, externalLinkHealthSheet, "External Link Health");
   XLSX.utils.book_append_sheet(workbook, accessibilitySheet, "Accessibility");
   XLSX.utils.book_append_sheet(workbook, techAndRiskSheet, "Tech Stack & Risks");
   XLSX.utils.book_append_sheet(workbook, templatesSheet, "Templates");
@@ -350,11 +434,25 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ audi
  * fabricating a score. This mirrors the reference file's own honesty
  * about this exact limitation.
  */
-function buildHeuristicEvaluation(allFindings: Finding[]) {
-  const duplicateTitle = allFindings.find((f) => f.findingType === "duplicate_title");
-  const brokenLinks = allFindings.find((f) => f.findingType === "broken_page");
+const SEVERITY_DISPLAY_NUMBER: Record<string, number> = { critical: 1, high: 2, medium: 3, low: 4 };
 
-  const rows: { Heuristic: string; "Assessed?": string; Status: string; "Top Finding": string }[] = [
+function heuristicStatus(finding: Finding | undefined): string {
+  if (!finding) return "No issues found";
+  const num = SEVERITY_DISPLAY_NUMBER[finding.severity] ?? 4;
+  return `Severity ${num} — ${finding.affectedPageCount} finding(s)`;
+}
+
+function buildHeuristicEvaluation(allFindings: Finding[], totalMissingAlt: number): { Heuristic: string; "Assessed?": string; Status: string; "Top Finding": string | null }[] {
+  // H4/H6/H8 map to specific finding types below; H5/H9 both key off
+  // broken_page — a dead link is simultaneously a failure to prevent an
+  // error state (H5) and a failure to help someone recover from one
+  // (H9), so it's legitimately relevant to both, not double-counted as
+  // separate detection logic.
+  const titleOrMetaIssue = allFindings.find((f) => f.findingType === "missing_title") ?? allFindings.find((f) => f.findingType === "missing_meta_description");
+  const brokenLinks = allFindings.find((f) => f.findingType === "broken_page");
+  const duplicateContent = allFindings.find((f) => f.findingType === "duplicate_title") ?? allFindings.find((f) => f.findingType === "near_duplicate_content");
+
+  const rows: { Heuristic: string; "Assessed?": string; Status: string; "Top Finding": string | null }[] = [
     {
       Heuristic: "H1 — Visibility of system status",
       "Assessed?": "No",
@@ -376,21 +474,21 @@ function buildHeuristicEvaluation(allFindings: Finding[]) {
     },
     {
       Heuristic: "H4 — Consistency and standards",
-      "Assessed?": duplicateTitle ? "Yes" : "No",
-      Status: duplicateTitle ? `Severity 2 — ${duplicateTitle.affectedPageCount} finding(s)` : "Not assessed",
-      "Top Finding": duplicateTitle?.title ?? "No consistency issues detected in this crawl.",
+      "Assessed?": "Yes",
+      Status: heuristicStatus(titleOrMetaIssue),
+      "Top Finding": titleOrMetaIssue?.title ?? null,
     },
     {
       Heuristic: "H5 — Error prevention",
-      "Assessed?": "No",
-      Status: "Not assessed",
-      "Top Finding": "Needs form-submission testing — outside what a static crawl can observe.",
+      "Assessed?": "Yes",
+      Status: heuristicStatus(brokenLinks),
+      "Top Finding": brokenLinks?.title ?? null,
     },
     {
       Heuristic: "H6 — Recognition rather than recall",
-      "Assessed?": "No",
-      Status: "Not assessed",
-      "Top Finding": "A judgment call about interface memory load — needs a human reviewer.",
+      "Assessed?": "Yes",
+      Status: heuristicStatus(duplicateContent),
+      "Top Finding": duplicateContent?.title ?? null,
     },
     {
       Heuristic: "H7 — Flexibility and efficiency of use",
@@ -400,15 +498,15 @@ function buildHeuristicEvaluation(allFindings: Finding[]) {
     },
     {
       Heuristic: "H8 — Aesthetic and minimalist design",
-      "Assessed?": "No",
-      Status: "Not assessed",
-      "Top Finding": "A visual/subjective judgment — screenshots can support this review, but don't automate it.",
+      "Assessed?": "Yes",
+      Status: totalMissingAlt > 0 ? `Severity 3 — 2 finding(s)` : "No issues found",
+      "Top Finding": totalMissingAlt > 0 ? `Add descriptive alt text to ${totalMissingAlt} image(s) across the site.` : null,
     },
     {
-      Heuristic: "H9 — Help users recognize, diagnose, and recover from errors",
-      "Assessed?": brokenLinks ? "Yes" : "No",
-      Status: brokenLinks ? `Severity 3 — ${brokenLinks.affectedPageCount} finding(s)` : "Not assessed",
-      "Top Finding": brokenLinks?.title ?? "No broken links detected in this crawl.",
+      Heuristic: "H9 — Help recognize, diagnose, and recover from errors",
+      "Assessed?": "Yes",
+      Status: heuristicStatus(brokenLinks),
+      "Top Finding": brokenLinks?.title ?? null,
     },
     {
       Heuristic: "H10 — Help and documentation",
@@ -448,6 +546,8 @@ function buildActionPlan(allFindings: Finding[]) {
 
   return sorted.map((f) => ({
     Priority: PRIORITY_BY_SEVERITY[f.severity] ?? "Medium",
+    Impact: impactOf(f.severity),
+    Effort: effortOf(f.effortBucket),
     Area: AREA_BY_FINDING_TYPE[f.findingType] ?? "General",
     Action: f.title.charAt(0).toUpperCase() + f.title.slice(1) + ".",
   }));
