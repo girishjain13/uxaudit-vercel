@@ -150,6 +150,11 @@ export default async function ReportPage({ params }: { params: Promise<{ auditId
   const effortX = (effort: string) => (effort === "Low" ? 20 : effort === "Medium" ? 50 : 85);
   const impactY = (impact: string) => (impact === "High" ? 20 : 85);
 
+  const techStackFindings = allFindings.filter((f) => f.findingType === "cms_detected" || f.findingType === "js_framework_detected");
+  const riskFindings = allFindings.filter(
+    (f) => f.findingType === "mixed_content" || f.findingType === "exposed_staging" || f.findingType === "pii_without_privacy_link",
+  );
+
   return (
     <main className="min-h-screen bg-[#f8fafc] text-slate-900" style={{ fontFamily: "var(--font-sans)" }}>
       <div className="mx-auto max-w-6xl px-6 py-10">
@@ -293,6 +298,52 @@ export default async function ReportPage({ params }: { params: Promise<{ auditId
             ))}
           </div>
         </section>
+
+        {/* Integrations & Tech Stack */}
+        {(techStackFindings.length > 0 || riskFindings.length > 0) && (
+          <section className="mb-8 grid gap-4 sm:grid-cols-2">
+            <div className="rounded-lg border border-slate-200 bg-white p-5">
+              <h2 className="mb-3 text-sm font-semibold text-slate-900">Tech Stack &amp; Integrations</h2>
+              {techStackFindings.length === 0 ? (
+                <p className="text-xs text-slate-500">No CMS or JS framework signatures were recognized during this crawl.</p>
+              ) : (
+                <ul className="space-y-2">
+                  {techStackFindings.map((f) => (
+                    <li key={f.id} className="flex items-start justify-between gap-2 text-sm">
+                      <span className="text-slate-700">{f.title}</span>
+                      <span className="shrink-0 text-xs text-slate-400">{f.affectedPageCount} page(s)</span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+            <div className="rounded-lg border border-slate-200 bg-white p-5">
+              <h2 className="mb-3 text-sm font-semibold text-slate-900">Risk Flags</h2>
+              {riskFindings.length === 0 ? (
+                <p className="text-xs text-slate-500">No mixed-content, exposed-staging, or PII-without-privacy-link risks detected.</p>
+              ) : (
+                <ul className="space-y-2">
+                  {riskFindings.map((f) => (
+                    <li key={f.id} className="flex items-start justify-between gap-2 text-sm">
+                      <span className="text-slate-700">{f.title}</span>
+                      <span
+                        className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-medium ${
+                          f.severity === "high" || f.severity === "critical"
+                            ? "bg-rose-50 text-rose-700"
+                            : f.severity === "medium"
+                              ? "bg-amber-50 text-amber-700"
+                              : "bg-emerald-50 text-emerald-700"
+                        }`}
+                      >
+                        {f.severity}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          </section>
+        )}
 
         {/* Action Plan + Impact/Effort */}
         <section className="mb-8">

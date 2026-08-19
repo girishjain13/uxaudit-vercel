@@ -8,7 +8,7 @@ import { assets, audits, interactions, links, pages, screenshots } from "@/lib/d
 import { renderPage } from "@/lib/browserless";
 import { canFetch, loadRobots } from "@/lib/robots";
 import { enqueueAnalysis, enqueuePageCrawl } from "@/lib/qstash";
-import { decrOutstandingAndCheckDone, incrOutstanding, markSeenIfNew } from "@/lib/redis";
+import { decrOutstandingAndCheckDone, incrOutstanding, markSeenIfNew, reserveEnqueueSlots } from "@/lib/redis";
 
 /**
  * This function is the per-page equivalent of the original orchestrator's
@@ -138,15 +138,26 @@ async function handler(req: NextRequest) {
       });
     }
 
-    // Discover further pages — same depth/max_pages guard as the original,
-    // just with Redis SETNX instead of an in-memory list for dedup, since
-    // multiple invocations can race on the same discovered link.
+    // Discover further pages. Previously this only checked depth —
+    // despite the comment here once claiming a maxPages guard existed,
+    // nothing ever actually capped the total page count. reserveEnqueueSlots
+    // (lib/redis.ts) now enforces the real budget across both this
+    // link-discovery path and the sitemap-seeding path in
+    // app/api/audits/route.ts, atomically, so concurrent page-crawl
+    // invocations can't collectively overshoot it.
     if (depth < audit.maxDepth) {
+      const newlyDiscovered: string[] = [];
       for (const link of result.internalLinks) {
-        const isNew = await markSeenIfNew(auditId, link);
-        if (isNew) {
-          await incrOutstanding(auditId, 1);
-          await enqueuePageCrawl({ auditId, url: link, depth: depth + 1 });
+        if (await markSeenIfNew(auditId, link)) newlyDiscovered.push(link);
+      }
+      if (newlyDiscovered.length > 0) {
+        const granted = await reserveEnqueueSlots(auditId, audit.maxPages, newlyDiscovered.length);
+        const toEnqueue = newlyDiscovered.slice(0, granted);
+        if (toEnqueue.length > 0) {
+          await incrOutstanding(auditId, toEnqueue.length);
+          for (const link of toEnqueue) {
+            await enqueuePageCrawl({ auditId, url: link, depth: depth + 1 });
+          }
         }
       }
     }

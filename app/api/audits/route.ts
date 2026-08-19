@@ -3,7 +3,8 @@ import { z } from "zod";
 import { db } from "@/lib/db";
 import { audits } from "@/lib/db/schema";
 import { enqueuePageCrawl } from "@/lib/qstash";
-import { incrOutstanding, markSeenIfNew } from "@/lib/redis";
+import { incrOutstanding, markSeenIfNew, reserveEnqueueSlots } from "@/lib/redis";
+import { discoverSitemapUrls } from "@/lib/sitemap";
 
 const createAuditSchema = z.object({
   clientName: z.string().min(1).max(200),
@@ -40,18 +41,46 @@ export async function POST(req: NextRequest) {
     })
     .returning();
 
-  // Seed the queue with exactly one job — the start URL at depth 0.
-  // Everything after this is discovered and enqueued by /api/crawl/page
-  // itself, page by page, the same way the original orchestrator grew
-  // its frontier as it went — just without a loop holding it all in memory.
+  // Seed the queue with the start URL at depth 0. maxPages now actually
+  // means something: every enqueue — this one included — reserves a
+  // slot against the audit's budget first, so the total can never
+  // exceed what was asked for, regardless of how many links or sitemap
+  // entries get discovered along the way.
   await markSeenIfNew(audit.id, input.startUrl);
-  await incrOutstanding(audit.id, 1);
-  await enqueuePageCrawl({
-    auditId: audit.id,
-    url: input.startUrl,
-    depth: 0,
-    maxConcurrency: input.maxConcurrency,
-  });
+  const seedGranted = await reserveEnqueueSlots(audit.id, input.maxPages, 1);
+  if (seedGranted > 0) {
+    await incrOutstanding(audit.id, 1);
+    await enqueuePageCrawl({
+      auditId: audit.id,
+      url: input.startUrl,
+      depth: 0,
+      maxConcurrency: input.maxConcurrency,
+    });
+  }
+
+  // Sitemap seeding: link-following alone routinely under-discovers
+  // pages on sites with JS pagination, mega-menus, or "load more"
+  // patterns that don't expose every path in a single render. Pages
+  // found only this way (never linked to internally) will correctly
+  // still surface as orphan-page findings later — that's accurate
+  // signal, not a bug, since they genuinely aren't reachable through
+  // normal site navigation even though they exist.
+  const sitemapUrls = await discoverSitemapUrls(input.startUrl);
+  const newSitemapUrls: string[] = [];
+  for (const url of sitemapUrls) {
+    if (url === input.startUrl) continue;
+    if (await markSeenIfNew(audit.id, url)) newSitemapUrls.push(url);
+  }
+  if (newSitemapUrls.length > 0) {
+    const granted = await reserveEnqueueSlots(audit.id, input.maxPages, newSitemapUrls.length);
+    const toEnqueue = newSitemapUrls.slice(0, granted);
+    if (toEnqueue.length > 0) {
+      await incrOutstanding(audit.id, toEnqueue.length);
+      for (const url of toEnqueue) {
+        await enqueuePageCrawl({ auditId: audit.id, url, depth: 1, maxConcurrency: input.maxConcurrency });
+      }
+    }
+  }
 
   return NextResponse.json({ auditId: audit.id, status: audit.status }, { status: 201 });
 }

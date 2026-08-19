@@ -67,3 +67,30 @@ export async function decrOutstandingAndCheckDone(auditId: string): Promise<bool
   const remaining = await redis.decr(`audit:${auditId}:outstanding`);
   return remaining <= 0;
 }
+
+/**
+ * Nothing previously capped how many pages an audit could actually
+ * enqueue — `maxPages` was accepted on the form and stored on the audit
+ * row, but never checked anywhere before adding a new page to the
+ * queue. That was harmless while link-discovery alone rarely surfaced
+ * more than a couple hundred pages, but sitemap.xml seeding (lib/
+ * sitemap.ts) can hand back up to 2000 URLs at once — without a real
+ * cap, that's 2000 uncapped Browserless-rendered pages, not the number
+ * the person actually asked for.
+ *
+ * `reserveEnqueueSlots` atomically reserves N slots up to the audit's
+ * maxPages budget and returns how many were actually granted (which may
+ * be less than requested, or zero) — INCRBY is atomic in Redis, so
+ * concurrent callers can't both think they got the last slot.
+ */
+export async function reserveEnqueueSlots(auditId: string, maxPages: number, requested: number): Promise<number> {
+  if (requested <= 0) return 0;
+  const newTotal = await redis.incrby(`audit:${auditId}:totalEnqueued`, requested);
+  const granted = requested - Math.max(0, newTotal - maxPages);
+  if (granted < requested) {
+    // Give back the slots we couldn't actually use, so the counter
+    // reflects reality rather than drifting upward forever.
+    await redis.decrby(`audit:${auditId}:totalEnqueued`, requested - Math.max(granted, 0));
+  }
+  return Math.max(granted, 0);
+}
