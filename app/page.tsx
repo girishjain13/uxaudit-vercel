@@ -11,6 +11,7 @@ export default function Home() {
   const [maxConcurrency, setMaxConcurrency] = useState(4);
   const [respectRobots, setRespectRobots] = useState(true);
   const [clientStatedPageCount, setClientStatedPageCount] = useState("");
+  const [selectedPersonas, setSelectedPersonas] = useState<string[]>(["ux", "content", "business"]);
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [activeAuditId, setActiveAuditId] = useState<string | null>(null);
@@ -30,6 +31,7 @@ export default function Home() {
           maxDepth,
           maxConcurrency,
           respectRobots,
+          selectedPersonas,
           ...(clientStatedPageCount ? { clientStatedPageCount: Number(clientStatedPageCount) } : {}),
         }),
       });
@@ -64,6 +66,37 @@ export default function Home() {
           <div className="section">
             <div className="card">
               <form onSubmit={handleSubmit}>
+                <div className="field">
+                  <label className="field-label">Audit as</label>
+                  <div style={{ display: "flex", gap: "1.25rem", flexWrap: "wrap" }}>
+                    {(
+                      [
+                        { id: "ux", label: "UX Lead" },
+                        { id: "content", label: "Content Strategist" },
+                        { id: "business", label: "Business Analyst" },
+                      ] as const
+                    ).map((role) => (
+                      <label key={role.id} className="checkline">
+                        <input
+                          type="checkbox"
+                          checked={selectedPersonas.includes(role.id)}
+                          onChange={(e) => {
+                            setSelectedPersonas((prev) =>
+                              e.target.checked ? [...prev, role.id] : prev.filter((p) => p !== role.id),
+                            );
+                          }}
+                        />
+                        {role.label}
+                      </label>
+                    ))}
+                  </div>
+                  {selectedPersonas.length === 0 && (
+                    <p className="small-dim" style={{ color: "var(--coral)", marginTop: 6 }}>
+                      Select at least one role.
+                    </p>
+                  )}
+                </div>
+
                 <div className="field">
                   <label className="field-label" htmlFor="start_url">
                     Target URL
@@ -160,7 +193,7 @@ export default function Home() {
                   </div>
                 </details>
 
-                <button type="submit" disabled={submitting} className="btn">
+                <button type="submit" disabled={submitting || selectedPersonas.length === 0} className="btn">
                   {submitting ? "Starting…" : "Run Audit →"}
                 </button>
                 {submitError && <div className="small-dim" style={{ color: "var(--coral)", marginTop: 10 }}>{submitError}</div>}

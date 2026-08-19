@@ -13,6 +13,7 @@ const createAuditSchema = z.object({
   respectRobots: z.boolean().default(true),
   clientStatedPageCount: z.number().int().positive().optional(),
   maxConcurrency: z.number().int().positive().max(20).default(4),
+  selectedPersonas: z.array(z.enum(["ux", "content", "business"])).min(1).default(["ux", "content", "business"]),
 });
 
 export async function POST(req: NextRequest) {
@@ -32,6 +33,7 @@ export async function POST(req: NextRequest) {
       maxDepth: input.maxDepth,
       respectRobots: input.respectRobots,
       clientStatedPageCount: input.clientStatedPageCount,
+      selectedPersonas: input.selectedPersonas,
       status: "crawling",
       startedAt: new Date(),
       outstandingPageCount: 1,

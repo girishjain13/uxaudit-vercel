@@ -34,7 +34,11 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ audi
 
   const allPages = await fetchAllPagesForAnalysis(auditId);
   const allLinks = await db.select().from(links).where(eq(links.auditId, auditId));
-  const allFindings = await db.select().from(findings).where(eq(findings.auditId, auditId));
+  const allFindingsUnfiltered = await db.select().from(findings).where(eq(findings.auditId, auditId));
+  const selectedPersonas = new Set(audit.selectedPersonas ?? ["ux", "content", "business"]);
+  const allFindings = allFindingsUnfiltered.filter(
+    (f) => f.findingType === "scale_summary" || f.personas.some((p) => selectedPersonas.has(p)),
+  );
   // See app/api/analyze/[auditId]/route.ts for why this isn't a join —
   // the join duplicated the full pages row (both giant HTML columns)
   // once per asset, which is what actually blew past Neon's 64MB
@@ -233,6 +237,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ audi
     [],
     ["Client", audit.clientName],
     ["Site audited", audit.startUrl],
+    ["Audited as", [...selectedPersonas].join(", ")],
     ["Pages crawled", allPages.length],
     ["Findings", allFindings.length],
     ["Crawl started", audit.startedAt ? new Date(audit.startedAt).toISOString() : null],

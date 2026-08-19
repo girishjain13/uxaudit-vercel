@@ -58,6 +58,14 @@ export const audits = pgTable("audits", {
   // detection, not as the actual work queue.
   outstandingPageCount: integer("outstanding_page_count").notNull().default(0),
   aiSummary: text("ai_summary"),
+  // Which of ux / content / business the user asked to audit for on this
+  // run — matches "the application should allow the user to select one
+  // or more audit roles" from the roles-requirements doc. Findings
+  // themselves are still tagged with all applicable personas regardless
+  // (a finding doesn't stop being a content issue just because someone
+  // only selected "ux" this run) — this field controls what the report
+  // and export actually SHOW, not what gets detected.
+  selectedPersonas: jsonb("selected_personas").$type<string[]>().notNull().default(["ux", "content", "business"]),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   startedAt: timestamp("started_at", { withTimezone: true }),
   finishedAt: timestamp("finished_at", { withTimezone: true }),

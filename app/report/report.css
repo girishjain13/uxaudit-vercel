@@ -1,0 +1,14 @@
+@import "tailwindcss";
+
+/*
+ * Scoped to app/report/[auditId] only, via app/report/[auditId]/layout.tsx
+ * importing this file — Next.js code-splits CSS per route segment, so
+ * this never loads on (and never affects) the intake form page, which
+ * keeps its separate "Studio" theme from app/globals.css untouched.
+ * Two different visual languages by design: the form is a lightweight
+ * intake step, this report page follows the enterprise-dashboard spec
+ * given for it specifically.
+ */
+@theme {
+  --font-sans: var(--font-inter), Inter, system-ui, sans-serif;
+}
