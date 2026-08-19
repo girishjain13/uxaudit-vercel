@@ -4,10 +4,12 @@ import { AlertTriangle, CheckCircle2, Copy, Download, FileJson, FileSpreadsheet,
 import { db } from "@/lib/db";
 import { audits, findings, links } from "@/lib/db/schema";
 import { fetchAllPagesForAnalysis } from "@/lib/db/pagesBatch";
-import { countImagesAndMissingAlt } from "@/lib/reportAnalysis";
+import { countImagesAndMissingAlt, classifyIntegrations, extractScripts } from "@/lib/reportAnalysis";
 import { buildScorecard } from "@/lib/scoring";
 import { generateInPlainTerms, generateUxLeadAssessment } from "@/lib/narrative";
 import { PrintButton } from "@/app/report/PrintButton";
+import { extractComponentSignatures, runComponentAnalysis } from "@/lib/components";
+import { urlToNetloc } from "@/lib/url";
 
 export const dynamic = "force-dynamic";
 
@@ -55,6 +57,23 @@ export default async function ReportPage({ params }: { params: Promise<{ auditId
 
   const allPages = await fetchAllPagesForAnalysis(auditId);
   const allLinks = await db.select().from(links).where(eq(links.auditId, auditId));
+
+  const rootHostForReport = urlToNetloc(audit.startUrl);
+  const componentHits = new Map<string, Set<string>>();
+  const integrationDomainsPerPage: { url: string; domains: string[] }[] = [];
+  for (const p of allPages) {
+    if (!p.renderedDomHtml) continue;
+    for (const sig of extractComponentSignatures(p.renderedDomHtml)) {
+      if (!componentHits.has(sig)) componentHits.set(sig, new Set());
+      componentHits.get(sig)!.add(p.url);
+    }
+    const { externalDomains } = extractScripts(p.renderedDomHtml, rootHostForReport);
+    integrationDomainsPerPage.push({ url: p.url, domains: externalDomains });
+  }
+  const uniqueTemplateCount = new Set(allPages.map((p) => p.templateFingerprint).filter(Boolean)).size;
+  const componentAnalysis = runComponentAnalysis(componentHits, allPages.length);
+  const { recognized: recognizedIntegrations, unrecognized: unrecognizedIntegrations } = classifyIntegrations(integrationDomainsPerPage);
+  const uniqueIntegrationCount = recognizedIntegrations.length + unrecognizedIntegrations.length;
   const allFindingsUnfiltered = await db.select().from(findings).where(eq(findings.auditId, auditId));
   const selectedPersonas = new Set(audit.selectedPersonas ?? ["ux", "content", "business"]);
   const allFindings = allFindingsUnfiltered.filter(
@@ -211,6 +230,11 @@ export default async function ReportPage({ params }: { params: Promise<{ auditId
             <CoverageCard label="Crawl Limit" value={audit.maxPages} />
             <CoverageCard label="Page Errors" value={pageErrors} tone={pageErrors > 0 ? "warn" : "ok"} />
             <CoverageCard label="Crawl Coverage" value={coverageComplete ? "Complete" : "Partial"} tone={coverageComplete ? "ok" : "warn"} />
+          </div>
+          <div className="mt-3 grid grid-cols-3 gap-3">
+            <CoverageCard label="Unique Templates" value={uniqueTemplateCount} />
+            <CoverageCard label="Unique Components" value={componentAnalysis.uniqueComponentCount} />
+            <CoverageCard label="Unique Integrations" value={uniqueIntegrationCount} />
           </div>
           <p className="mt-2 text-xs text-slate-500">
             {coverageComplete

@@ -59,6 +59,9 @@ export default function Home() {
           Type a URL, run it, and get back a heuristic evaluation — scored, prioritized, and readable in a design
           review.
         </div>
+        <a href="/audits" className="small-dim" style={{ display: "inline-block", marginTop: "0.75rem" }}>
+          View past audits →
+        </a>
       </div>
 
       <div className="wrap narrow">
@@ -122,7 +125,7 @@ export default function Home() {
                         id="max_pages"
                         type="number"
                         min={1}
-                        max={5000}
+                        max={10000}
                         value={maxPages}
                         onChange={(e) => setMaxPages(Number(e.target.value))}
                       />

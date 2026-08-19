@@ -165,7 +165,7 @@ function buildInBrowserScript(url: string, rootHost: string): string {
   return `
     export default async function ({ page, context }) {
       const rootHost = ${JSON.stringify(rootHost)};
-      const response = await page.goto(context.url, { waitUntil: "networkidle2", timeout: 30000 });
+      const response = await page.goto(context.url, { waitUntil: "networkidle2", timeout: 45000 });
       const statusCode = response ? response.status() : null;
       const lastModified = response ? (response.headers()["last-modified"] ?? null) : null;
 

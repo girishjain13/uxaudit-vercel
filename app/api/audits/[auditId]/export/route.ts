@@ -6,6 +6,7 @@ import { audits, findings, links, pages } from "@/lib/db/schema";
 import { urlToNetloc } from "@/lib/url";
 import { classifyIntegrations, countImagesAndMissingAlt, extractScripts, extractVisibleText, fleschReadingEase, hasSchemaOrg, pathDepth, textHash, topKeywords, topPhrases } from "@/lib/reportAnalysis";
 import { runTemplateAnalysis } from "@/lib/templates";
+import { extractComponentSignatures, runComponentAnalysis } from "@/lib/components";
 import { fetchAllPagesForAnalysis } from "@/lib/db/pagesBatch";
 import { extractLocaleSignals, runLocaleAnalysis } from "@/lib/locale";
 import { runMediaAnalysis } from "@/lib/media";
@@ -95,6 +96,26 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ audi
     missingMetaDescriptionCount: findingByType("missing_meta_description")?.affectedPageCount ?? 0,
     canonicalMissingCount: allPages.filter((p) => !p.canonical).length,
   });
+
+  const componentHits = new Map<string, Set<string>>();
+  for (const d of derived) {
+    if (!d.page.renderedDomHtml) continue;
+    for (const sig of extractComponentSignatures(d.page.renderedDomHtml)) {
+      if (!componentHits.has(sig)) componentHits.set(sig, new Set());
+      componentHits.get(sig)!.add(d.page.url);
+    }
+  }
+  const componentAnalysis = runComponentAnalysis(componentHits, allPages.length);
+  const componentsSheet = XLSX.utils.json_to_sheet(
+    componentAnalysis.components.map((c) => ({
+      Component: c.signature,
+      Tag: c.tag,
+      Classes: c.classes,
+      "Page Count": c.pageCount,
+      "Page Coverage %": c.pageCoveragePct,
+      "Example URL": c.exampleUrl,
+    })),
+  );
 
   const localePerPage = allPages.map((p) => extractLocaleSignals(p.renderedDomHtml || ""));
   const featureMatrix = detectFeaturesAcrossSite(
@@ -290,6 +311,10 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ audi
     ["Thin content pages", allPages.filter((p) => p.wordCount > 0 && p.wordCount < 150).length],
     ["Duplicate content pages", (findingByType("duplicate_title")?.affectedPageCount ?? 0) + (findingByType("near_duplicate_content")?.affectedPageCount ?? 0)],
     ["Pages with accessibility issues", `${allPages.filter((p) => (p.accessibilityViolations ?? []).length > 0).length} / ${allPages.length}`],
+    [],
+    ["Unique page templates", new Set(allPages.map((p) => p.templateFingerprint).filter(Boolean)).size],
+    ["Unique reusable components", componentAnalysis.uniqueComponentCount],
+    ["Unique third-party integrations", recognized.length + unrecognized.length],
   ];
   if (audit.clientStatedPageCount != null) {
     overviewRows.push(["Client-stated page count", audit.clientStatedPageCount]);
@@ -405,6 +430,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ audi
   XLSX.utils.book_append_sheet(workbook, accessibilitySheet, "Accessibility");
   XLSX.utils.book_append_sheet(workbook, techAndRiskSheet, "Tech Stack & Risks");
   XLSX.utils.book_append_sheet(workbook, templatesSheet, "Templates");
+  XLSX.utils.book_append_sheet(workbook, componentsSheet, "Components");
   XLSX.utils.book_append_sheet(workbook, journeySheet, "Journey Maps");
   XLSX.utils.book_append_sheet(workbook, localeSheet, "Locale");
   XLSX.utils.book_append_sheet(workbook, mediaSheet, "Media & Assets");
